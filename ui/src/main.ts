@@ -1,4 +1,5 @@
 import "./styles.css";
+import "./shape-overrides.css";
 import { bridge } from "./bridge";
 import { bytes, timeLabel } from "./format";
 import { icon, logo } from "./icons";
@@ -14,6 +15,10 @@ type AppState = {
   modelOpen: boolean;
   onboardingOpen: boolean;
   setupStep: number;
+  setupRunning: boolean;
+  setupError?: string;
+  setupStatus: string;
+  setupProgress: number;
   selectedQuant: "q5" | "q8";
   setupDocsets: Set<string>;
   mode: ReasoningMode;
@@ -34,8 +39,11 @@ const state: AppState = {
   modelOpen: false,
   onboardingOpen: localStorage.getItem("palor:onboarded") !== "true",
   setupStep: 0,
+  setupRunning: false,
+  setupStatus: "Preparing setup…",
+  setupProgress: 0,
   selectedQuant: "q5",
-  setupDocsets: new Set(["python", "cpp", "html", "css", "javascript"]),
+  setupDocsets: new Set(["python"]),
   mode: "fast",
   docsets: [],
   downloads: [],
@@ -51,15 +59,6 @@ const app: HTMLDivElement = mount;
 
 document.documentElement.dataset.theme = state.theme;
 
-const recents = [
-  "Async generators in Python",
-  "CSS grid vs flexbox layout",
-  "std::vector move semantics",
-  "Fetch API and AbortController",
-  "Semantic HTML for forms",
-  "Dataclasses and typing",
-];
-
 function navItem(view: View, label: string, iconName: "chat" | "book" | "download", badge?: number): string {
   const active = state.view === view ? " active" : "";
   return `<button class="nav-item${active}" data-view="${view}" title="${label}">${icon(iconName)}<span class="nav-label">${label}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
@@ -73,23 +72,14 @@ function renderSidebar(): string {
       <button class="icon-button" id="collapseSidebar" title="Collapse sidebar" aria-label="Collapse sidebar">${icon("panel")}</button>
     </div>
     <nav class="primary-nav" aria-label="Primary">
-      <button class="nav-item${state.view === "chat" ? " active" : ""}" id="newChat" title="New chat">${icon("plus")}<span class="nav-label">New chat</span></button>
+      <button class="nav-item" id="newChat" title="New chat">${icon("plus")}<span class="nav-label">New chat</span></button>
       ${navItem("chat", "Chats", "chat")}
       ${navItem("docs", "Docs", "book")}
       ${navItem("downloads", "Downloads", "download", activeDownloads)}
     </nav>
-    <div class="recent-area">
-      <div class="section-label">Recents</div>
-      <nav class="recents" aria-label="Recent chats">
-        ${recents.map((item) => `<button class="recent">${item}</button>`).join("")}
-      </nav>
-    </div>
+    <div class="side-spacer"></div>
     <div class="side-bottom">
-      <button class="user-chip" title="Local profile">
-        <span class="user-avatar">P</span>
-        <span class="user-copy"><span class="user-name">Local user</span><span class="user-plan">Offline</span></span>
-      </button>
-      <button class="icon-button" id="settingsButton" title="Settings" aria-label="Open settings">${icon("settings")}</button>
+      <button class="nav-item" id="settingsButton" title="Settings">${icon("settings")}<span class="nav-label">Settings</span></button>
     </div>
   </aside>`;
 }
@@ -99,7 +89,6 @@ function renderTopbar(): string {
   return `<header class="topbar">
     <div class="page-title">${title}</div>
     <div class="topbar-actions">
-      <div class="status-pill" title="All inference and search stays on this device"><span class="status-dot"></span>Offline ready</div>
       <button class="icon-button" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">${icon(state.theme === "dark" ? "moon" : "sun")}</button>
     </div>
   </header>`;
@@ -107,7 +96,7 @@ function renderTopbar(): string {
 
 function attachmentChips(removable = true): string {
   if (!state.attachments.length) return "";
-  return `<div class="attachment-row">${state.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${file.name}</span>${removable ? `<button class="icon-button remove-attachment" data-attachment="${file.id}" title="Remove ${file.name}" style="width:18px;height:18px">${icon("x")}</button>` : ""}</span>`).join("")}</div>`;
+  return `<div class="attachment-row">${state.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span>${removable ? `<button class="icon-button remove-attachment" data-attachment="${escapeHtml(file.id)}" title="Remove ${escapeHtml(file.name)}" style="width:18px;height:18px">${icon("x")}</button>` : ""}</span>`).join("")}</div>`;
 }
 
 function renderComposer(): string {
@@ -116,7 +105,7 @@ function renderComposer(): string {
     <div class="composer-shell">
       ${attachmentChips()}
       <div class="composer">
-        <textarea id="composerInput" rows="1" placeholder="Ask your offline docs and code…" ${state.busy ? "disabled" : ""}></textarea>
+        <textarea id="composerInput" rows="1" placeholder="Ask your offline docs." ${state.busy ? "disabled" : ""}></textarea>
         <div class="composer-row">
           <div class="composer-left">
             <button class="tool-button" id="attachButton" title="Attach code" aria-label="Attach code">${icon("paperclip")}</button>
@@ -129,7 +118,6 @@ function renderComposer(): string {
           </div>
         </div>
       </div>
-      <div class="composer-hint">Answers can be inaccurate. Check the cited sources.</div>
     </div>
     ${state.modelOpen ? renderModelPopover() : ""}
   </div>`;
@@ -151,8 +139,7 @@ function renderEmptyChat(): string {
   return `<section class="chat-view">
     <div class="empty-chat">
       <div class="hero">
-        <div class="greeting">${logo()}<h1>Ask your docs</h1></div>
-        <div class="greeting-sub">Ask about your downloaded documentation or code.</div>
+        <div class="greeting">${logo()}<h1>Ask Anything</h1></div>
         ${renderComposer()}
       </div>
     </div>
@@ -161,10 +148,10 @@ function renderEmptyChat(): string {
 
 function renderMessage(message: ChatMessage): string {
   const sourceMarkup = message.sources?.length
-    ? `<div class="message-sources">${message.sources.map((source) => `<button class="source-chip" data-source="${source.url}" title="Open ${source.title}, ${source.section}"><span class="source-n">${source.id}</span>${source.docset} · ${source.section}</button>`).join("")}</div>`
+    ? `<div class="message-sources">${message.sources.map((source) => `<button class="source-chip" data-source="${escapeHtml(source.url)}" title="Open ${escapeHtml(source.title)}, ${escapeHtml(source.section)}"><span class="source-n">${escapeHtml(source.id)}</span>${escapeHtml(source.docset)} · ${escapeHtml(source.section)}</button>`).join("")}</div>`
     : "";
   const attachments = message.attachments?.length
-    ? `<div class="attachment-row">${message.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${file.name}</span></span>`).join("")}</div>`
+    ? `<div class="attachment-row">${message.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span></span>`).join("")}</div>`
     : "";
   return `<article class="message ${message.role}" data-message-id="${message.id}">
     <div class="message-avatar">${message.role === "assistant" ? logo() : "A"}</div>
@@ -186,7 +173,7 @@ function renderChat(): string {
 }
 
 function docAction(doc: Docset): string {
-  if (doc.state === "installed") return `<div class="installed-check">${icon("check")} Indexed</div><button class="button">Open</button>`;
+  if (doc.state === "installed") return `<div class="installed-check">${icon("check")} Installed</div>`;
   if (doc.state === "downloading" || doc.state === "indexing") return `<div class="progress-track"><div class="progress-value" style="width:${doc.progress}%"></div></div><span class="download-state">${doc.state} ${Math.round(doc.progress)}%</span>`;
   return `<span></span><button class="button primary install-doc" data-docset="${doc.id}">${icon("download")} Download</button>`;
 }
@@ -197,15 +184,10 @@ function renderDocs(): string {
   return `<section class="content-view"><div class="content-inner">
     <div class="content-header">
       <div><h1>Docs</h1><p>Install, update, or remove documentation.</p></div>
-      <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Search installed docs" /></label>
+      <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" /></label>
     </div>
-    <div class="resource-card">
-      <div class="resource-icon">${icon("database")}</div>
-      <div class="resource-copy"><div class="resource-title">Ready to search</div><div class="resource-detail">Installed documentation is available offline.</div></div>
-      <span class="resource-stat">${indexedPages.toLocaleString()} pages</span>
-      <button class="button subtle" id="testSearch">Test search</button>
-    </div>
-    <div class="doc-grid">${state.docsets.map((doc) => `<article class="doc-card" style="--doc-color:${doc.accent}">
+    <div class="library-summary">${indexedPages.toLocaleString()} installed pages</div>
+    <div class="doc-grid">${state.docsets.map((doc) => `<article class="doc-card" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
       <div class="doc-head"><div class="doc-icon">${doc.initials}</div><div class="doc-copy"><div class="doc-name">${doc.name}</div><div class="doc-version">${doc.version}</div></div></div>
       <div class="doc-description">${doc.detail}</div>
       <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span><span>${doc.pages?.toLocaleString()} pages</span></div>
@@ -215,32 +197,36 @@ function renderDocs(): string {
 }
 
 function renderDownloads(): string {
-  const rows = state.downloads.length ? state.downloads.map((item) => `<div class="download-row">
-    <div class="download-file-icon">${item.id === "model" ? icon("chip") : item.id === "embeddings" ? icon("spark") : icon("file")}</div>
-    <div><div class="download-name">${item.name}</div><div class="download-detail">${item.detail}</div></div>
-    <div><div class="progress-track"><div class="progress-value" style="width:${item.progress}%"></div></div><div class="download-progress-copy">${bytes(item.downloadedBytes)} of ${bytes(item.totalBytes)}${item.speedBytes ? ` · ${bytes(item.speedBytes)}/s` : ""}</div></div>
-    <div class="download-state">${item.state === "installed" ? "Verified" : item.state}</div>
-    <button class="icon-button" title="${item.state === "installed" ? "Remove" : "Pause"}">${icon(item.state === "installed" ? "trash" : "pause")}</button>
-  </div>`).join("") : `<div style="padding:30px;text-align:center;color:var(--muted);font-size:12px">No downloads yet.</div>`;
+  const rows = state.downloads.length ? state.downloads.map((item) => {
+    const indexing = item.id.endsWith("-index") || item.state === "indexing";
+    const progressCopy = indexing
+      ? `${Math.round(item.downloadedBytes).toLocaleString()} of ${Math.round(item.totalBytes).toLocaleString()} sections`
+      : `${bytes(item.downloadedBytes)} of ${bytes(item.totalBytes)}${item.speedBytes ? ` · ${bytes(item.speedBytes)}/s` : ""}`;
+    return `<div class="download-row">
+      <div class="download-file-icon">${item.id.startsWith("minicpm") ? icon("chip") : icon("file")}</div>
+      <div><div class="download-name">${escapeHtml(item.name)}</div><div class="download-detail">${escapeHtml(item.detail)}</div></div>
+      <div><div class="progress-track"><div class="progress-value" style="width:${item.progress}%"></div></div><div class="download-progress-copy">${progressCopy}</div></div>
+      <div class="download-state">${item.state === "installed" ? "Ready" : escapeHtml(item.state)}</div>
+    </div>`;
+  }).join("") : `<div class="empty-list">No downloads yet.</div>`;
   return `<section class="content-view"><div class="content-inner">
-    <div class="content-header"><div><h1>Downloads</h1><p>Manage downloaded files and storage.</p></div><button class="button" id="dataFolder">${icon("folder")} Data folder</button></div>
+    <div class="content-header"><div><h1>Downloads</h1><p>Manage downloaded files.</p></div><button class="button" id="dataFolder">${icon("folder")} Data folder</button></div>
     <div class="download-list">${rows}</div>
-    <div class="storage-card"><div class="storage-head"><span>Palor storage</span><span>2.1 GB used · 80.3 GB available</span></div><div class="storage-bar"><div class="storage-model"></div><div class="storage-docs"></div></div><div class="storage-legend"><span><i class="legend-dot" style="background:var(--accent)"></i>Models 1.2 GB</span><span><i class="legend-dot" style="background:var(--deep)"></i>Docs & indexes 0.9 GB</span><span><i class="legend-dot" style="background:var(--border-strong)"></i>Available</span></div></div>
   </div></section>`;
 }
 
 function renderSettings(): string {
   if (!state.settingsOpen) return "";
+  const context = state.preflight?.recommendedContext.toLocaleString() ?? "Automatic";
   return `<div class="modal-backdrop" id="settingsBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
-      <div class="setting-section"><div class="setting-title">Model</div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">Q5 uses less memory; Q8 offers slightly higher fidelity.</div></div><select class="select"><option>MiniCPM 5 · Q5</option><option>MiniCPM 5 · Q8</option></select></div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Context</div><div class="setting-detail">Chosen from available RAM during preflight.</div></div><select class="select"><option>8,192 tokens</option><option selected>16,384 tokens</option><option>32,768 tokens</option></select></div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Runtime</div><div class="setting-detail">Auto uses available hardware; CPU is the fallback.</div></div><select class="select"><option>Auto</option><option>CPU compatibility</option></select></div>
-      </div>
-      <div class="privacy-box"><strong>Data handling.</strong> Prompts, chats, documentation and attached code remain on this device. Telemetry is disabled.</div>
-      <div class="setting-section"><div class="setting-title">About</div><div class="setting-row"><div class="setting-copy"><div class="setting-name">Palor</div><div class="setting-detail">Version 0.1.0</div></div><button class="button">Notices</button></div></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Appearance</div><div class="setting-detail">${state.theme === "dark" ? "Dark" : "Light"}</div></div><button class="button" id="settingsTheme">Change</button></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">MiniCPM 5 · ${state.selectedQuant.toUpperCase()}</div></div></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Context</div><div class="setting-detail">${context} tokens</div></div></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Files</div><div class="setting-detail">Open Palor's data folder</div></div><button class="button" id="settingsDataFolder">Open</button></div>
+      <div class="privacy-box"><strong>Data handling.</strong> Prompts, documentation and attached code remain on this device. Telemetry is disabled.</div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Palor</div><div class="setting-detail">Version 0.1.0</div></div></div>
     </div>
   </section></div>`;
 }
@@ -251,6 +237,13 @@ function checkRow(kind: "memory" | "drive" | "chip", name: string, detail: strin
 
 function renderOnboardingBody(): string {
   const report = state.preflight;
+  if (state.setupError) {
+    return `<div class="onboarding-kicker">Setup stopped</div><h1>Something went wrong</h1><p class="onboarding-lead setup-error">${escapeHtml(state.setupError)}</p>`;
+  }
+  if (state.setupRunning) {
+    return `<div class="onboarding-kicker">Setup</div><h1>Preparing Palor</h1><p class="onboarding-lead">Keep Palor open until setup finishes.</p>
+      <div class="setup-progress"><div class="progress-track"><div class="progress-value" id="setupProgressBar" style="width:${state.setupProgress}%"></div></div><div class="setup-progress-copy" id="setupProgressText">${escapeHtml(state.setupStatus)}</div></div>`;
+  }
   if (state.setupStep === 0) {
     const hasFailures = Boolean(report?.hardFailures.length);
     const ramStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("memory")) ? "fail" : "ok";
@@ -265,8 +258,8 @@ function renderOnboardingBody(): string {
   if (state.setupStep === 1) {
     return `<div class="onboarding-kicker">MiniCPM 5</div><h1>Choose a model size</h1><p class="onboarding-lead">Q5 is suitable for most devices. Q8 uses more memory and provides slightly higher fidelity.</p>
       <div class="option-grid">
-        <button class="option-card${state.selectedQuant === "q5" ? " selected" : ""}" data-quant="q5"><div class="option-name">Q5 · Recommended</div><div class="option-detail">Fast, compact and high quality. Best default across supported machines.</div><div class="option-meta"><span class="meta-tag">751 MiB</span><span class="meta-tag">8 GB RAM recommended</span></div></button>
-        <button class="option-card${state.selectedQuant === "q8" ? " selected" : ""}" data-quant="q8"><div class="option-name">Q8 · Maximum quantized quality</div><div class="option-detail">More fidelity with a larger memory and disk footprint.</div><div class="option-meta"><span class="meta-tag">1.07 GiB</span><span class="meta-tag">12 GB RAM recommended</span></div></button>
+        <button class="option-card${state.selectedQuant === "q5" ? " selected" : ""}" data-quant="q5"><div class="option-name">Q5</div><div class="option-detail">Uses less memory.</div><div class="option-meta"><span class="meta-tag">751 MiB</span><span class="meta-tag">8 GB RAM</span></div></button>
+        <button class="option-card${state.selectedQuant === "q8" ? " selected" : ""}" data-quant="q8"><div class="option-name">Q8</div><div class="option-detail">Uses more memory.</div><div class="option-meta"><span class="meta-tag">1.07 GiB</span><span class="meta-tag">12 GB RAM</span></div></button>
       </div>`;
   }
   const total = state.docsets.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
@@ -279,10 +272,16 @@ function renderOnboarding(): string {
   if (!state.onboardingOpen) return "";
   const hasFailures = Boolean(state.preflight?.hardFailures.length);
   const last = state.setupStep === 2;
-  return `<div class="modal-backdrop"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
-    <div class="onboarding-top"><div class="onboarding-brand">${logo()} Palor</div><div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div></div>
+  const progressMode = state.setupRunning || Boolean(state.setupError);
+  const footer = state.setupError
+    ? `<div class="onboarding-note">Downloaded files are kept, so retrying will resume where possible.</div><div class="button-row"><button class="button" id="setupCancelError">Back</button><button class="button primary" id="setupRetry">Retry</button></div>`
+    : state.setupRunning
+      ? `<div class="onboarding-note">Setup must finish before the rest of the app can be used.</div>`
+      : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Palor" : "Continue"}</button></div>`;
+  return `<div class="modal-backdrop setup-backdrop"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+    <div class="onboarding-top"><div class="onboarding-brand">${logo()} Palor</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
     <div class="onboarding-body" id="setupTitle">${renderOnboardingBody()}</div>
-    <div class="onboarding-bottom"><div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${hasFailures && state.setupStep === 0 ? "disabled" : ""}>${last ? "Set up Palor" : "Continue"}</button></div></div>
+    <div class="onboarding-bottom">${footer}</div>
   </section></div>`;
 }
 
@@ -305,6 +304,22 @@ function render(): void {
   if (state.messages.length) requestAnimationFrame(scrollMessages);
 }
 
+let renderTimer: number | undefined;
+function scheduleRender(): void {
+  if (renderTimer !== undefined) return;
+  renderTimer = window.setTimeout(() => {
+    renderTimer = undefined;
+    render();
+  }, 250);
+}
+
+function toggleTheme(): void {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = state.theme;
+  localStorage.setItem("palor:theme", state.theme);
+  render();
+}
+
 function toast(message: string): void {
   state.toasts.push(message);
   render();
@@ -322,29 +337,59 @@ function setView(view: View): void {
   render();
 }
 
-function startDocInstall(id: string): void {
+async function installDocsetBlocking(id: string): Promise<void> {
   const doc = state.docsets.find((item) => item.id === id);
   if (!doc || doc.state === "installed") return;
+  state.onboardingOpen = true;
+  state.setupRunning = true;
+  state.setupError = undefined;
+  state.setupProgress = 0;
+  state.setupStatus = `Preparing ${doc.name}…`;
   doc.state = "downloading";
-  doc.progress = 1;
-  const download: DownloadItem = { id: doc.id, name: `${doc.name} · ${doc.version}`, detail: "Downloading and verifying", state: "downloading", progress: 1, downloadedBytes: 0, totalBytes: doc.compressedBytes, speedBytes: 8.4 * 1024 ** 2 };
-  state.downloads.push(download);
-  void bridge.installDocset(id).catch(() => undefined);
   render();
-  const timer = window.setInterval(() => {
-    doc.progress = Math.min(100, doc.progress + Math.random() * 12 + 4);
-    download.progress = doc.progress;
-    download.downloadedBytes = Math.round(download.totalBytes * doc.progress / 100);
-    if (doc.progress >= 88) { doc.state = "indexing"; download.state = "indexing"; download.detail = "Preparing search"; }
-    if (doc.progress >= 100) {
-      window.clearInterval(timer);
-      doc.state = "installed";
-      download.state = "installed";
-      download.detail = `${doc.pages?.toLocaleString()} pages indexed`;
-      download.speedBytes = undefined;
-      toast(`${doc.name} is installed and searchable offline.`);
-    } else render();
-  }, 280);
+  try {
+    await bridge.installDocset(id);
+    if (!bridge.isDesktop()) await new Promise((resolve) => setTimeout(resolve, 500));
+    doc.state = "installed";
+    doc.progress = 100;
+    state.setupRunning = false;
+    state.onboardingOpen = false;
+    render();
+  } catch (error) {
+    state.setupError = error instanceof Error ? error.message : String(error);
+    state.setupRunning = false;
+    render();
+  }
+}
+
+async function runSetup(): Promise<void> {
+  state.onboardingOpen = true;
+  state.setupRunning = true;
+  state.setupError = undefined;
+  state.setupProgress = 0;
+  state.setupStatus = "Preparing model files…";
+  render();
+  try {
+    await bridge.prepareResources(state.selectedQuant);
+    for (const id of state.setupDocsets) {
+      const doc = state.docsets.find((item) => item.id === id);
+      if (doc?.state === "installed") continue;
+      state.setupStatus = `Preparing ${doc?.name ?? id}…`;
+      state.setupProgress = 0;
+      render();
+      await bridge.installDocset(id);
+    }
+    state.docsets = await bridge.docsets();
+    state.downloads = await bridge.downloads();
+    localStorage.setItem("palor:onboarded", "true");
+    state.setupRunning = false;
+    state.onboardingOpen = false;
+    render();
+  } catch (error) {
+    state.setupError = error instanceof Error ? error.message : String(error);
+    state.setupRunning = false;
+    render();
+  }
 }
 
 async function addFiles(files: FileList): Promise<void> {
@@ -396,7 +441,8 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view as View)));
   document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; setView("chat"); });
   document.querySelector("#collapseSidebar")?.addEventListener("click", () => { state.sidebarCollapsed = !state.sidebarCollapsed; localStorage.setItem("palor:sidebar", state.sidebarCollapsed ? "collapsed" : "open"); render(); });
-  document.querySelector("#themeToggle")?.addEventListener("click", () => { state.theme = state.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = state.theme; localStorage.setItem("palor:theme", state.theme); render(); });
+  document.querySelector("#themeToggle")?.addEventListener("click", toggleTheme);
+  document.querySelector("#settingsTheme")?.addEventListener("click", toggleTheme);
   document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; render(); });
   document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; render(); });
   document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; render(); } });
@@ -409,7 +455,7 @@ function bindEvents(): void {
   document.querySelector("#attachButton")?.addEventListener("click", () => document.querySelector<HTMLInputElement>("#fileInput")?.click());
   document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", (event) => { const files = (event.currentTarget as HTMLInputElement).files; if (files) void addFiles(files); });
   document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); render(); }));
-  document.querySelectorAll<HTMLElement>(".install-doc").forEach((button) => button.addEventListener("click", () => startDocInstall(button.dataset.docset ?? "")));
+  document.querySelectorAll<HTMLElement>(".install-doc").forEach((button) => button.addEventListener("click", () => void installDocsetBlocking(button.dataset.docset ?? "")));
   document.querySelectorAll<HTMLElement>("[data-source]").forEach((button) => button.addEventListener("click", () => {
     const url = button.dataset.source ?? "";
     void bridge.readSource(url).then((source) => { state.reader = source; render(); }).catch((error: unknown) => toast(`Could not open source: ${error instanceof Error ? error.message : String(error)}`));
@@ -417,22 +463,28 @@ function bindEvents(): void {
   document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; render(); });
   document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; render(); } });
   document.querySelector("#dataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
-  document.querySelector("#testSearch")?.addEventListener("click", () => { state.messages = []; state.view = "chat"; render(); const composer = document.querySelector<HTMLTextAreaElement>("#composerInput"); if (composer) { composer.value = "How do Python TaskGroups handle a failed child task?"; composer.focus(); } });
+  document.querySelector("#settingsDataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
+  document.querySelector<HTMLInputElement>("#docSearch")?.addEventListener("input", (event) => {
+    const query = (event.currentTarget as HTMLInputElement).value.trim().toLowerCase();
+    document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
+      card.hidden = Boolean(query) && !(card.dataset.docFilter ?? "").includes(query);
+    });
+  });
   document.querySelector("#scopeButton")?.addEventListener("click", () => setView("docs"));
   document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); render(); });
   document.querySelector("#setupNext")?.addEventListener("click", () => {
     if (state.setupStep < 2) { state.setupStep += 1; render(); return; }
-    state.onboardingOpen = false;
-    localStorage.setItem("palor:onboarded", "true");
+    void runSetup();
+  });
+  document.querySelector("#setupRetry")?.addEventListener("click", () => {
+    state.setupError = undefined;
+    void runSetup();
+  });
+  document.querySelector("#setupCancelError")?.addEventListener("click", () => {
+    state.setupError = undefined;
+    state.setupRunning = false;
+    state.setupStep = 2;
     render();
-    void bridge.prepareResources(state.selectedQuant)
-      .then(async () => {
-        toast("MiniCPM 5 is ready.");
-        for (const id of state.setupDocsets) await bridge.installDocset(id);
-        toast("Selected documentation is indexed and ready offline.");
-      })
-      .catch((error: unknown) => toast(`Setup stopped: ${error instanceof Error ? error.message : String(error)}`));
-    toast("Palor setup queued. You can explore the interface while resources install.");
   });
   document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; render(); }));
   document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); render(); }));
@@ -442,9 +494,17 @@ async function init(): Promise<void> {
   render();
   const [preflight, docsets, downloads] = await Promise.all([bridge.preflight(), bridge.docsets(), bridge.downloads()]);
   state.preflight = preflight;
-  state.selectedQuant = preflight.recommendedQuant;
+  state.selectedQuant = downloads.some((item) => item.id === "minicpm5-q8" && item.state === "installed")
+    ? "q8"
+    : downloads.some((item) => item.id === "minicpm5-q5" && item.state === "installed") ? "q5" : preflight.recommendedQuant;
   state.docsets = docsets;
   state.downloads = downloads;
+  const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
+  const docsReady = docsets.some((doc) => doc.state === "installed");
+  if (bridge.isDesktop() && (!modelReady || !docsReady)) {
+    localStorage.removeItem("palor:onboarded");
+    state.onboardingOpen = true;
+  }
   await bridge.onDownloadProgress((item) => {
     const existing = state.downloads.findIndex((download) => download.id === item.id);
     if (existing >= 0) state.downloads[existing] = item; else state.downloads.push(item);
@@ -454,7 +514,18 @@ async function init(): Promise<void> {
       doc.progress = item.progress;
       doc.state = item.state === "installed" ? "installed" : "indexing";
     }
-    render();
+    if (state.setupRunning) {
+      state.setupProgress = item.progress;
+      state.setupStatus = item.detail || item.name;
+      const bar = document.querySelector<HTMLElement>("#setupProgressBar");
+      const text = document.querySelector<HTMLElement>("#setupProgressText");
+      if (bar && text) {
+        bar.style.width = `${item.progress}%`;
+        text.textContent = state.setupStatus;
+        return;
+      }
+    }
+    scheduleRender();
   });
   render();
 }

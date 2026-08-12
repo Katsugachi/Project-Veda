@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
@@ -133,6 +134,14 @@ pub async fn install_docset(
         .into_iter()
         .find(|asset| asset.kind == AssetKind::Docset && asset.docset == Some(id))
         .ok_or_else(|| format!("no source is configured for {}", id.as_str()))?;
+    let install_dir = state.data_dir.join("docsets").join(id.as_str());
+    let index_path = state
+        .data_dir
+        .join("indexes")
+        .join(format!("{}.json.zst", id.as_str()));
+    if install_dir.join("manifest.json").exists() && index_path.exists() {
+        return Ok(());
+    }
     let archive = download_asset(&app, state, &source, state.data_dir.join("downloads")).await?;
     let source_root = state
         .data_dir
@@ -173,7 +182,6 @@ pub async fn install_docset(
             source_offer_url: Some(source.url.clone()),
         },
     };
-    let install_dir = state.data_dir.join("docsets").join(id.as_str());
     tokio::fs::create_dir_all(&install_dir)
         .await
         .map_err(|error| error.to_string())?;
@@ -237,10 +245,11 @@ async fn index_docset(
         .flat_map(|page| palor_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
         .collect::<Vec<_>>();
     let id = pack.manifest.id.as_str().to_string();
-    let item_name = format!("{} search index", pack.manifest.name);
+    let item_name = pack.manifest.name.clone();
     let total = chunks.len().max(1);
     let mut indexed = Vec::with_capacity(chunks.len());
-    for (batch_index, batch) in chunks.chunks(8).enumerate() {
+    let mut last_progress = Instant::now() - Duration::from_secs(1);
+    for (batch_index, batch) in chunks.chunks(4).enumerate() {
         let inputs = batch
             .iter()
             .map(|chunk| {
@@ -248,17 +257,30 @@ async fn index_docset(
                     "{}\n{}\n{}",
                     chunk.title,
                     chunk.section,
-                    chunk.text.chars().take(1_800).collect::<String>()
+                    chunk.text.chars().take(900).collect::<String>()
                 )
             })
             .collect::<Vec<_>>();
-        let embeddings = client
-            .embed_passages(&inputs)
-            .await
-            .map_err(|error| error.to_string())?;
+        let embeddings = match client.embed_passages(&inputs).await {
+            Ok(embeddings) => embeddings,
+            Err(batch_error) => {
+                tracing::warn!(%batch_error, "embedding batch failed; retrying one section at a time");
+                let mut recovered = Vec::with_capacity(inputs.len());
+                for input in &inputs {
+                    let mut result = client
+                        .embed_passages(std::slice::from_ref(input))
+                        .await
+                        .map_err(|single_error| {
+                            format!("search preparation failed: {single_error}; batch error: {batch_error}")
+                        })?;
+                    recovered.push(result.remove(0));
+                }
+                recovered
+            }
+        };
         if embeddings.len() != batch.len() {
             let _ = sidecar.stop().await;
-            return Err("embedding server returned the wrong number of vectors".into());
+            return Err("search preparation returned an unexpected result".into());
         }
         for (chunk, embedding) in batch.iter().zip(embeddings) {
             indexed.push(palor_search::SearchChunk {
@@ -278,19 +300,22 @@ async fn index_docset(
                 embedding,
             });
         }
-        let completed = ((batch_index + 1) * 8).min(total);
-        let item = DownloadItem {
-            id: format!("{id}-index"),
-            name: item_name.clone(),
-            detail: format!("Embedding {completed} of {total} chunks"),
-            state: "indexing".into(),
-            progress: completed as f32 / total as f32 * 100.0,
-            downloaded_bytes: completed as u64,
-            total_bytes: total as u64,
-            speed_bytes: None,
-        };
-        upsert_download(state, item.clone());
-        let _ = app.emit("download-progress", item);
+        let completed = ((batch_index + 1) * 4).min(total);
+        if last_progress.elapsed() >= Duration::from_millis(250) || completed == total {
+            let item = DownloadItem {
+                id: format!("{id}-index"),
+                name: item_name.clone(),
+                detail: format!("Preparing search · {completed} of {total}"),
+                state: "indexing".into(),
+                progress: completed as f32 / total as f32 * 100.0,
+                downloaded_bytes: completed as u64,
+                total_bytes: total as u64,
+                speed_bytes: None,
+            };
+            upsert_download(state, item.clone());
+            let _ = app.emit("download-progress", item);
+            last_progress = Instant::now();
+        }
     }
     sidecar.stop().await.map_err(|error| error.to_string())?;
     let index_dir = state.data_dir.join("indexes");
@@ -308,7 +333,7 @@ async fn index_docset(
     let installed = DownloadItem {
         id: format!("{id}-index"),
         name: item_name,
-        detail: format!("{} chunks indexed", total),
+        detail: "Ready".into(),
         state: "installed".into(),
         progress: 100.0,
         downloaded_bytes: total as u64,

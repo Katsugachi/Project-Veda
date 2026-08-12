@@ -52,7 +52,7 @@ impl LlamaSidecar {
             command
                 .arg("--embeddings")
                 .arg("--batch-size")
-                .arg("512")
+                .arg("2048")
                 .arg("--ubatch-size")
                 .arg("512");
             if let Some(pooling) = &config.pooling {

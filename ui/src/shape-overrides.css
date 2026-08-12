@@ -1,0 +1,61 @@
+/* Deliberately restrained geometry: only small controls and status dots are circular. */
+[hidden] { display: none !important; }
+
+.side-spacer { flex: 1; }
+.side-bottom { display: block; padding: 10px 0 0; }
+.side-bottom .nav-item { width: 100%; }
+.sidebar-collapsed .side-bottom { display: block; padding-top: 10px; }
+.sidebar-collapsed .side-bottom .nav-item { display: flex; }
+
+.icon-button,
+.nav-item,
+.recent,
+.model-button,
+.scope-button,
+.tool-button,
+.send-button,
+.button,
+.select,
+.search-box,
+.source-chip,
+.attachment-chip,
+.meta-tag,
+.popover-item { border-radius: 6px; }
+
+.composer { border-radius: 10px; }
+.message-avatar,
+.message-body pre,
+.resource-icon,
+.doc-icon,
+.download-file-icon,
+.check-icon { border-radius: 7px; }
+.resource-card,
+.doc-card,
+.download-list,
+.preflight-row,
+.option-card,
+.setup-doc,
+.privacy-box,
+.toast,
+.popover { border-radius: 8px; }
+.onboarding,
+.settings-panel { border-radius: 10px; }
+
+.tool-button { border-radius: 6px; }
+.doc-card:hover { transform: none; }
+.modal-backdrop { backdrop-filter: none; animation: none; }
+.onboarding { box-shadow: 0 16px 42px rgba(0, 0, 0, .28); }
+
+.library-summary { margin: -12px 0 14px; color: var(--muted); font-size: 10.5px; }
+.empty-list { padding: 30px; text-align: center; color: var(--muted); font-size: 12px; }
+.download-row { grid-template-columns: 38px minmax(180px, 1.3fr) minmax(140px, 1fr) 90px; }
+
+.setup-progress { margin-top: 34px; border: 1px solid var(--border); background: var(--bg); padding: 18px; border-radius: 8px; }
+.setup-progress-copy { margin-top: 12px; color: var(--text-soft); font-size: 11.5px; }
+.setup-error { color: var(--danger); white-space: pre-wrap; }
+.setup-backdrop { background: rgba(7, 9, 7, .78); }
+
+@media (max-width: 920px) {
+  .download-row { grid-template-columns: 38px 1fr 90px; }
+  .download-row > div:nth-child(3) { display: none; }
+}
