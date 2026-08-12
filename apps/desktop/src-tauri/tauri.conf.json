@@ -34,7 +34,7 @@
     "active": true,
     "targets": ["app", "dmg", "nsis"],
     "category": "DeveloperTool",
-    "shortDescription": "Private offline documentation assistant",
+    "shortDescription": "Offline documentation assistant",
     "longDescription": "Ask questions about downloaded Python, C++, HTML, CSS, JavaScript documentation and local code.",
     "copyright": "Copyright © 2026 Palor contributors",
     "icon": [
