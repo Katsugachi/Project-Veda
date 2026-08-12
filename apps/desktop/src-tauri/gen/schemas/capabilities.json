@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Minimum permissions for the Palor desktop window","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open","fs:allow-read-text-file","opener:allow-open-path","shell:allow-open"]}}

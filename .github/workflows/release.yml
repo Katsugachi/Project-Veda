@@ -12,17 +12,17 @@ jobs:
   macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run tauri build -- --target universal-apple-darwin --bundles dmg
-      - uses: actions/upload-artifact@v4
+      - run: npm run tauri build -- --target universal-apple-darwin --bundles dmg --no-sign
+      - uses: actions/upload-artifact@v6
         with:
           name: Palor-macOS-universal-DMG
           path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
@@ -30,17 +30,17 @@ jobs:
   windows-x64:
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
-      - uses: actions/upload-artifact@v4
+      - run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --no-sign
+      - uses: actions/upload-artifact@v6
         with:
           name: Palor-Windows-x64-Setup
           path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
@@ -50,17 +50,17 @@ jobs:
     # The older windows-11-arm image does not include Visual Studio.
     runs-on: windows-11-vs2026-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis
-      - uses: actions/upload-artifact@v4
+      - run: npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis --no-sign
+      - uses: actions/upload-artifact@v6
         with:
           name: Palor-Windows-ARM64-Setup
           path: target/aarch64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
@@ -70,7 +70,7 @@ jobs:
     needs: [macos, windows-x64, windows-arm64]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
       - uses: softprops/action-gh-release@v2

@@ -47,7 +47,7 @@ pub fn evaluate_preflight(snapshot: HardwareSnapshot) -> PreflightReport {
     }
     if snapshot.total_memory_bytes < MINIMUM_MEMORY_BYTES {
         hard_failures
-            .push("At least 6 GiB of physical memory is required for MiniCPM 5 and RAG.".into());
+            .push("At least 6 GiB of physical memory is required to run MiniCPM 5.".into());
     }
     if snapshot.disk_kind == DiskKind::Hdd {
         warnings.push(

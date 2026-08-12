@@ -86,8 +86,8 @@ function renderSidebar(): string {
     </div>
     <div class="side-bottom">
       <button class="user-chip" title="Local profile">
-        <span class="user-avatar">A</span>
-        <span class="user-copy"><span class="user-name">Alex</span><span class="user-plan">Local · Private</span></span>
+        <span class="user-avatar">P</span>
+        <span class="user-copy"><span class="user-name">Local user</span><span class="user-plan">Offline</span></span>
       </button>
       <button class="icon-button" id="settingsButton" title="Settings" aria-label="Open settings">${icon("settings")}</button>
     </div>
@@ -129,7 +129,7 @@ function renderComposer(): string {
           </div>
         </div>
       </div>
-      <div class="composer-hint">Local model · Hybrid retrieval · Responses can be inaccurate, so check cited sources.</div>
+      <div class="composer-hint">Answers can be inaccurate. Check the cited sources.</div>
     </div>
     ${state.modelOpen ? renderModelPopover() : ""}
   </div>`;
@@ -151,8 +151,8 @@ function renderEmptyChat(): string {
   return `<section class="chat-view">
     <div class="empty-chat">
       <div class="hero">
-        <div class="greeting">${logo()}<h1>Back at it, Alex</h1></div>
-        <div class="greeting-sub">Five docsets, your code, and one private local model.</div>
+        <div class="greeting">${logo()}<h1>Ask your docs</h1></div>
+        <div class="greeting-sub">Ask about your downloaded documentation or code.</div>
         ${renderComposer()}
       </div>
     </div>
@@ -196,12 +196,12 @@ function renderDocs(): string {
   const indexedPages = installed.reduce((sum, doc) => sum + (doc.pages ?? 0), 0);
   return `<section class="content-view"><div class="content-inner">
     <div class="content-header">
-      <div><h1>Docs</h1><p>Pick only what you need. Every page stays searchable without a connection.</p></div>
+      <div><h1>Docs</h1><p>Install, update, or remove documentation.</p></div>
       <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Search installed docs" /></label>
     </div>
     <div class="resource-card">
       <div class="resource-icon">${icon("database")}</div>
-      <div class="resource-copy"><div class="resource-title">Hybrid index is ready</div><div class="resource-detail">BM25 keyword search + local semantic vectors, fused and reranked before MiniCPM answers.</div></div>
+      <div class="resource-copy"><div class="resource-title">Ready to search</div><div class="resource-detail">Installed documentation is available offline.</div></div>
       <span class="resource-stat">${indexedPages.toLocaleString()} pages</span>
       <button class="button subtle" id="testSearch">Test search</button>
     </div>
@@ -223,7 +223,7 @@ function renderDownloads(): string {
     <button class="icon-button" title="${item.state === "installed" ? "Remove" : "Pause"}">${icon(item.state === "installed" ? "trash" : "pause")}</button>
   </div>`).join("") : `<div style="padding:30px;text-align:center;color:var(--muted);font-size:12px">No downloads yet.</div>`;
   return `<section class="content-view"><div class="content-inner">
-    <div class="content-header"><div><h1>Downloads</h1><p>Verified local resources. Interrupted downloads resume automatically.</p></div><button class="button" id="dataFolder">${icon("folder")} Data folder</button></div>
+    <div class="content-header"><div><h1>Downloads</h1><p>Manage downloaded files and storage.</p></div><button class="button" id="dataFolder">${icon("folder")} Data folder</button></div>
     <div class="download-list">${rows}</div>
     <div class="storage-card"><div class="storage-head"><span>Palor storage</span><span>2.1 GB used · 80.3 GB available</span></div><div class="storage-bar"><div class="storage-model"></div><div class="storage-docs"></div></div><div class="storage-legend"><span><i class="legend-dot" style="background:var(--accent)"></i>Models 1.2 GB</span><span><i class="legend-dot" style="background:var(--deep)"></i>Docs & indexes 0.9 GB</span><span><i class="legend-dot" style="background:var(--border-strong)"></i>Available</span></div></div>
   </div></section>`;
@@ -235,16 +235,12 @@ function renderSettings(): string {
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
       <div class="setting-section"><div class="setting-title">Model</div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">Shown simply as MiniCPM 5 in chat.</div></div><select class="select"><option>MiniCPM 5 · Q5</option><option>MiniCPM 5 · Q8</option></select></div>
+        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">Q5 uses less memory; Q8 offers slightly higher fidelity.</div></div><select class="select"><option>MiniCPM 5 · Q5</option><option>MiniCPM 5 · Q8</option></select></div>
         <div class="setting-row"><div class="setting-copy"><div class="setting-name">Context</div><div class="setting-detail">Chosen from available RAM during preflight.</div></div><select class="select"><option>8,192 tokens</option><option selected>16,384 tokens</option><option>32,768 tokens</option></select></div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Runtime</div><div class="setting-detail">Metal/CUDA/Vulkan when healthy, CPU fallback otherwise.</div></div><select class="select"><option>Auto</option><option>CPU compatibility</option></select></div>
+        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Runtime</div><div class="setting-detail">Auto uses available hardware; CPU is the fallback.</div></div><select class="select"><option>Auto</option><option>CPU compatibility</option></select></div>
       </div>
-      <div class="setting-section"><div class="setting-title">Retrieval</div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Hybrid RAG</div><div class="setting-detail">BM25 + BGE semantic search with reciprocal-rank fusion.</div></div><span class="installed-check">${icon("check")} Enabled</span></div>
-        <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model-directed search</div><div class="setting-detail">MiniCPM plans and refines searches before answering.</div></div><span class="installed-check">${icon("check")} Enabled</span></div>
-      </div>
-      <div class="privacy-box"><strong>Private by design.</strong> Prompts, chats, documentation and attached code remain on this device. Palor has no telemetry and makes no model API calls.</div>
-      <div class="setting-section"><div class="setting-title">About</div><div class="setting-row"><div class="setting-copy"><div class="setting-name">Palor 0.1.0</div><div class="setting-detail">MiniCPM 5 · llama.cpp · Rust · Tauri</div></div><button class="button">Notices</button></div></div>
+      <div class="privacy-box"><strong>Data handling.</strong> Prompts, chats, documentation and attached code remain on this device. Telemetry is disabled.</div>
+      <div class="setting-section"><div class="setting-title">About</div><div class="setting-row"><div class="setting-copy"><div class="setting-name">Palor</div><div class="setting-detail">Version 0.1.0</div></div><button class="button">Notices</button></div></div>
     </div>
   </section></div>`;
 }
@@ -259,7 +255,7 @@ function renderOnboardingBody(): string {
     const hasFailures = Boolean(report?.hardFailures.length);
     const ramStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("memory")) ? "fail" : "ok";
     const diskStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("disk")) ? "fail" : "ok";
-    return `<div class="onboarding-kicker">System check</div><h1>Ready to stay offline?</h1><p class="onboarding-lead">Palor checks memory, context capacity and local SSD space before downloading anything. At least 10 GB of free SSD space is required.</p>
+    return `<div class="onboarding-kicker">System check</div><h1>Check this device</h1><p class="onboarding-lead">Before downloading, Palor checks available memory and storage. At least 10 GB of free SSD space is required.</p>
       <div class="preflight-list">
         ${report ? checkRow("memory", "Memory and context", `Recommended context: ${report.recommendedContext.toLocaleString()} tokens`, bytes(report.totalMemoryBytes), ramStatus) : checkRow("memory", "Memory and context", "Checking available RAM…", "—", "warn")}
         ${report ? checkRow("drive", "Fast local storage", "10 GB minimum free space", `${bytes(report.freeDiskBytes)} · ${report.diskKind.toUpperCase()}`, diskStatus) : checkRow("drive", "Fast local storage", "Checking disk and free space…", "—", "warn")}
@@ -267,16 +263,16 @@ function renderOnboardingBody(): string {
       </div>`;
   }
   if (state.setupStep === 1) {
-    return `<div class="onboarding-kicker">MiniCPM 5</div><h1>Choose local model quality</h1><p class="onboarding-lead">Both choices use your supplied MiniCPM 5 GGUF source and are verified before launch. The app labels the model simply as “MiniCPM 5”.</p>
+    return `<div class="onboarding-kicker">MiniCPM 5</div><h1>Choose a model size</h1><p class="onboarding-lead">Q5 is suitable for most devices. Q8 uses more memory and provides slightly higher fidelity.</p>
       <div class="option-grid">
         <button class="option-card${state.selectedQuant === "q5" ? " selected" : ""}" data-quant="q5"><div class="option-name">Q5 · Recommended</div><div class="option-detail">Fast, compact and high quality. Best default across supported machines.</div><div class="option-meta"><span class="meta-tag">751 MiB</span><span class="meta-tag">8 GB RAM recommended</span></div></button>
         <button class="option-card${state.selectedQuant === "q8" ? " selected" : ""}" data-quant="q8"><div class="option-name">Q8 · Maximum quantized quality</div><div class="option-detail">More fidelity with a larger memory and disk footprint.</div><div class="option-meta"><span class="meta-tag">1.07 GiB</span><span class="meta-tag">12 GB RAM recommended</span></div></button>
       </div>`;
   }
   const total = state.docsets.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
-  return `<div class="onboarding-kicker">Documentation</div><h1>Pick your offline library</h1><p class="onboarding-lead">Palor downloads only selected packs, then builds a keyword and semantic index locally. You can change these later.</p>
+  return `<div class="onboarding-kicker">Documentation</div><h1>Choose documentation</h1><p class="onboarding-lead">Download only what you need. You can change this later.</p>
     <div class="setup-docs">${state.docsets.map((doc) => `<button class="setup-doc${state.setupDocsets.has(doc.id) ? " selected" : ""}" data-setup-doc="${doc.id}"><div class="setup-doc-abbr">${doc.initials}</div><div class="setup-doc-name">${doc.name}</div></button>`).join("")}</div>
-    <div class="setup-summary">${state.setupDocsets.size} packs · ${bytes(total)} compressed · BGE hybrid-search model included</div>`;
+    <div class="setup-summary">${state.setupDocsets.size} packs · ${bytes(total)} download</div>`;
 }
 
 function renderOnboarding(): string {
@@ -286,7 +282,7 @@ function renderOnboarding(): string {
   return `<div class="modal-backdrop"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
     <div class="onboarding-top"><div class="onboarding-brand">${logo()} Palor</div><div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div></div>
     <div class="onboarding-body" id="setupTitle">${renderOnboardingBody()}</div>
-    <div class="onboarding-bottom"><div class="onboarding-note">Downloads are HTTPS-only and SHA-256 verified. After setup, model use, search and chat work with networking disabled.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${hasFailures && state.setupStep === 0 ? "disabled" : ""}>${last ? "Set up Palor" : "Continue"}</button></div></div>
+    <div class="onboarding-bottom"><div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${hasFailures && state.setupStep === 0 ? "disabled" : ""}>${last ? "Set up Palor" : "Continue"}</button></div></div>
   </section></div>`;
 }
 
@@ -339,7 +335,7 @@ function startDocInstall(id: string): void {
     doc.progress = Math.min(100, doc.progress + Math.random() * 12 + 4);
     download.progress = doc.progress;
     download.downloadedBytes = Math.round(download.totalBytes * doc.progress / 100);
-    if (doc.progress >= 88) { doc.state = "indexing"; download.state = "indexing"; download.detail = "Building hybrid index"; }
+    if (doc.progress >= 88) { doc.state = "indexing"; download.state = "indexing"; download.detail = "Preparing search"; }
     if (doc.progress >= 100) {
       window.clearInterval(timer);
       doc.state = "installed";
@@ -369,7 +365,7 @@ async function sendMessage(): Promise<void> {
   if (!text) return;
   const attachments = structuredClone(state.attachments);
   state.messages.push({ id: crypto.randomUUID(), role: "user", content: text, createdAt: Date.now(), attachments });
-  const assistant: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "Planning a hybrid search…", createdAt: Date.now(), streaming: true };
+  const assistant: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "Searching installed docs…", createdAt: Date.now(), streaming: true };
   state.messages.push(assistant);
   state.attachments = [];
   state.busy = true;
@@ -431,7 +427,7 @@ function bindEvents(): void {
     render();
     void bridge.prepareResources(state.selectedQuant)
       .then(async () => {
-        toast("MiniCPM 5 and the hybrid-search model are verified and ready.");
+        toast("MiniCPM 5 is ready.");
         for (const id of state.setupDocsets) await bridge.installDocset(id);
         toast("Selected documentation is indexed and ready offline.");
       })

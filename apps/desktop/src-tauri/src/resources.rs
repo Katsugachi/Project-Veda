@@ -237,7 +237,7 @@ async fn index_docset(
         .flat_map(|page| palor_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
         .collect::<Vec<_>>();
     let id = pack.manifest.id.as_str().to_string();
-    let item_name = format!("{} hybrid index", pack.manifest.name);
+    let item_name = format!("{} search index", pack.manifest.name);
     let total = chunks.len().max(1);
     let mut indexed = Vec::with_capacity(chunks.len());
     for (batch_index, batch) in chunks.chunks(8).enumerate() {
@@ -595,7 +595,7 @@ fn extract_archive(archive: &Path, destination: &Path) -> io::Result<()> {
         let mut zip = zip::ZipArchive::new(file).map_err(io::Error::other)?;
         for index in 0..zip.len() {
             let mut entry = zip.by_index(index).map_err(io::Error::other)?;
-            let Some(relative) = entry.enclosed_name().map(Path::to_owned) else {
+            let Some(relative) = entry.enclosed_name() else {
                 return Err(io::Error::other("unsafe path in runtime ZIP"));
             };
             let output = destination.join(relative);

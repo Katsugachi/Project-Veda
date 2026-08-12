@@ -415,7 +415,7 @@ pub fn open_source(url: String) -> Result<(), String> {
 #[tauri::command]
 pub fn reveal_data_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     app.opener()
-        .open_path(&state.data_dir, None::<&str>)
+        .open_path(state.data_dir.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|error| error.to_string())
 }
 

@@ -86,7 +86,7 @@ pub fn default_catalog() -> Catalog {
             },
             Asset {
                 id: "bge-small-q8".into(),
-                name: "BGE Small English v1.5".into(),
+                name: "Offline search support".into(),
                 kind: AssetKind::EmbeddingModel,
                 url: "https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q8_0.gguf".into(),
                 sha256: "ec38e8da142596baa913124ae50550de284b6916bf59577ef2f0cb9660c2f514".into(),

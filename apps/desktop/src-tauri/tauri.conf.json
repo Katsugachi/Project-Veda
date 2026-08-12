@@ -34,8 +34,8 @@
     "active": true,
     "targets": ["app", "dmg", "nsis"],
     "category": "DeveloperTool",
-    "shortDescription": "Private offline documentation assistant",
-    "longDescription": "Ask MiniCPM 5 about Python, C++, HTML, CSS, JavaScript and local code using offline hybrid retrieval.",
+    "shortDescription": "Offline documentation assistant",
+    "longDescription": "Ask questions about downloaded Python, C++, HTML, CSS, JavaScript documentation and local code.",
     "copyright": "Copyright © 2026 Palor contributors",
     "icon": [
       "icons/32x32.png",
@@ -57,7 +57,7 @@
       "allowDowngrades": false,
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": {
-        "installMode": "perUser",
+        "installMode": "currentUser",
         "startMenuFolder": "Palor",
         "installerHooks": "windows/installer-hooks.nsh",
         "languages": ["English"]
