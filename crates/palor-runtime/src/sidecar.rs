@@ -48,6 +48,12 @@ impl LlamaSidecar {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+        }
         if config.embedding {
             command
                 .arg("--embeddings")

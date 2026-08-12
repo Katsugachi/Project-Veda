@@ -2,6 +2,18 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Keeps every complete embedding input safely below llama.cpp's 512-token
+/// physical micro-batch, even when the tokenizer falls back to byte tokens.
+pub const MAX_EMBEDDING_INPUT_BYTES: usize = 400;
+
+pub fn bounded_embedding_input(input: &str, max_bytes: usize) -> String {
+    let mut end = input.len().min(max_bytes);
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    input[..end].to_owned()
+}
+
 #[derive(Debug, Clone)]
 pub struct EmbeddingClient {
     http: Client,
@@ -43,7 +55,10 @@ impl EmbeddingClient {
     async fn embed(&self, inputs: Vec<String>) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         let request = EmbeddingRequest {
             model: "BGE Small".into(),
-            input: inputs,
+            input: inputs
+                .iter()
+                .map(|input| bounded_embedding_input(input, MAX_EMBEDDING_INPUT_BYTES))
+                .collect(),
             encoding_format: "float",
         };
         let response = self
@@ -90,4 +105,28 @@ pub enum EmbeddingError {
         status: reqwest::StatusCode,
         body: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bounded_embedding_input, MAX_EMBEDDING_INPUT_BYTES};
+
+    #[test]
+    fn bounds_ascii_complete_input() {
+        let bounded = bounded_embedding_input(&"x".repeat(1_000), MAX_EMBEDDING_INPUT_BYTES);
+        assert_eq!(bounded.len(), MAX_EMBEDDING_INPUT_BYTES);
+    }
+
+    #[test]
+    fn bounds_utf8_without_splitting_a_character() {
+        let bounded = bounded_embedding_input(&"🦀".repeat(200), MAX_EMBEDDING_INPUT_BYTES - 1);
+        assert!(bounded.len() < MAX_EMBEDDING_INPUT_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert_eq!(bounded.chars().count(), 99);
+    }
+
+    #[test]
+    fn preserves_short_input() {
+        assert_eq!(bounded_embedding_input("Python list", 400), "Python list");
+    }
 }

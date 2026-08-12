@@ -139,8 +139,17 @@ pub async fn install_docset(
         .data_dir
         .join("indexes")
         .join(format!("{}.json.zst", id.as_str()));
-    if install_dir.join("manifest.json").exists() && index_path.exists() {
-        return Ok(());
+    let (version, canonical_base, license_url, attribution) = docset_metadata(id);
+    let manifest_path = install_dir.join("manifest.json");
+    if manifest_path.exists() && index_path.exists() {
+        let installed_version = tokio::fs::read(&manifest_path)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<palor_docs::DocPackManifest>(&bytes).ok())
+            .map(|manifest| manifest.version);
+        if installed_version.as_deref() == Some(version) {
+            return Ok(());
+        }
     }
     let archive = download_asset(&app, state, &source, state.data_dir.join("downloads")).await?;
     let source_root = state
@@ -156,7 +165,6 @@ pub async fn install_docset(
             .as_deref()
             .ok_or("docset source has no input directory")?,
     );
-    let (version, canonical_base, license_url, attribution) = docset_metadata(id);
     let input_for_worker = input.clone();
     let canonical_for_worker = canonical_base.to_string();
     let pages = tokio::task::spawn_blocking(move || {
@@ -208,6 +216,52 @@ pub async fn install_docset(
     Ok(())
 }
 
+pub async fn remove_docset(state: &AppState, id: palor_core::DocsetId) -> Result<(), String> {
+    let install_dir = state.data_dir.join("docsets").join(id.as_str());
+    let source_dir = state
+        .data_dir
+        .join("docsets")
+        .join(format!(".{}-source", id.as_str()));
+    let index_path = state
+        .data_dir
+        .join("indexes")
+        .join(format!("{}.json.zst", id.as_str()));
+
+    if let Err(error) = tokio::fs::remove_dir_all(&install_dir).await {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(error.to_string());
+        }
+    }
+    if let Err(error) = tokio::fs::remove_dir_all(source_dir).await {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(error.to_string());
+        }
+    }
+    if let Err(error) = tokio::fs::remove_file(index_path).await {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(error.to_string());
+        }
+    }
+
+    if let Some(source) = default_catalog()
+        .assets
+        .into_iter()
+        .find(|asset| asset.kind == AssetKind::Docset && asset.docset == Some(id))
+    {
+        if let Some(filename) = source.url.rsplit('/').next() {
+            let _ = tokio::fs::remove_file(state.data_dir.join("downloads").join(filename)).await;
+        }
+        let source_id = source.id;
+        let index_id = format!("{}-index", id.as_str());
+        state
+            .downloads
+            .write()
+            .retain(|item| item.id != source_id && item.id != index_id);
+    }
+    *state.search_index.write() = None;
+    Ok(())
+}
+
 async fn index_docset(
     app: &AppHandle,
     state: &AppState,
@@ -225,7 +279,8 @@ async fn index_docset(
         .data_dir
         .join("models")
         .join("bge-small-en-v1.5-q8_0.gguf");
-    let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
+    let logical_cpus = sysinfo::System::new_all().cpus().len();
+    let threads = logical_cpus.div_ceil(2).clamp(1, 8);
     let mut sidecar = LlamaSidecar::spawn(SidecarConfig {
         executable: active.executable.clone(),
         model: embedding_model,
@@ -253,11 +308,10 @@ async fn index_docset(
         let inputs = batch
             .iter()
             .map(|chunk| {
-                format!(
-                    "{}\n{}\n{}",
-                    chunk.title,
-                    chunk.section,
-                    chunk.text.chars().take(900).collect::<String>()
+                let complete = format!("{}\n{}\n{}", chunk.title, chunk.section, chunk.text);
+                palor_runtime::bounded_embedding_input(
+                    &complete,
+                    palor_runtime::MAX_EMBEDDING_INPUT_BYTES,
                 )
             })
             .collect::<Vec<_>>();
@@ -267,13 +321,9 @@ async fn index_docset(
                 tracing::warn!(%batch_error, "embedding batch failed; retrying one section at a time");
                 let mut recovered = Vec::with_capacity(inputs.len());
                 for input in &inputs {
-                    let mut result = client
-                        .embed_passages(std::slice::from_ref(input))
-                        .await
-                        .map_err(|single_error| {
-                            format!("search preparation failed: {single_error}; batch error: {batch_error}")
-                        })?;
-                    recovered.push(result.remove(0));
+                    recovered.push(
+                        embed_one_with_backoff(&client, input, &batch_error.to_string()).await?,
+                    );
                 }
                 recovered
             }
@@ -345,6 +395,37 @@ async fn index_docset(
     Ok(())
 }
 
+const MIN_EMBEDDING_RETRY_BYTES: usize = 128;
+
+fn next_embedding_retry_limit(current: usize) -> usize {
+    (current * 3 / 4).max(MIN_EMBEDDING_RETRY_BYTES)
+}
+
+async fn embed_one_with_backoff(
+    client: &palor_runtime::EmbeddingClient,
+    input: &str,
+    batch_error: &str,
+) -> Result<Vec<f32>, String> {
+    let mut max_bytes = input.len();
+    loop {
+        let candidate = palor_runtime::bounded_embedding_input(input, max_bytes);
+        match client.embed_passages(&[candidate]).await {
+            Ok(mut embeddings) if embeddings.len() == 1 => return Ok(embeddings.remove(0)),
+            Ok(_) => return Err("Search preparation returned an unexpected result.".into()),
+            Err(error) if max_bytes > MIN_EMBEDDING_RETRY_BYTES => {
+                let next_max_bytes = next_embedding_retry_limit(max_bytes);
+                tracing::warn!(%error, max_bytes, next_max_bytes, "section was too large; retrying with a shorter input");
+                max_bytes = next_max_bytes;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not prepare search for this documentation. {error}; initial batch error: {batch_error}"
+                ));
+            }
+        }
+    }
+}
+
 fn docset_name(id: palor_core::DocsetId) -> &'static str {
     match id {
         palor_core::DocsetId::Python => "Python",
@@ -354,6 +435,18 @@ fn docset_name(id: palor_core::DocsetId) -> &'static str {
         palor_core::DocsetId::Javascript => "JavaScript",
     }
 }
+pub(crate) fn expected_docset_version(id: &str) -> Option<&'static str> {
+    let id = match id {
+        "python" => palor_core::DocsetId::Python,
+        "cpp" => palor_core::DocsetId::Cpp,
+        "html" => palor_core::DocsetId::Html,
+        "css" => palor_core::DocsetId::Css,
+        "javascript" => palor_core::DocsetId::Javascript,
+        _ => return None,
+    };
+    Some(docset_metadata(id).0)
+}
+
 fn docset_metadata(
     id: palor_core::DocsetId,
 ) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -455,9 +548,12 @@ async fn preferred_backend() -> &'static str {
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 async fn preferred_backend() -> &'static str {
-    let nvidia = tokio::process::Command::new("nvidia-smi.exe")
-        .arg("--query-gpu=name")
-        .arg("--format=csv,noheader")
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut command = tokio::process::Command::new("nvidia-smi.exe");
+    command.arg("--query-gpu=name").arg("--format=csv,noheader");
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    let nvidia = command
         .output()
         .await
         .is_ok_and(|output| output.status.success() && !output.stdout.is_empty());
@@ -677,4 +773,23 @@ fn walk_files(root: &Path) -> io::Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_embedding_retry_limit, MIN_EMBEDDING_RETRY_BYTES};
+
+    #[test]
+    fn embedding_retry_limit_strictly_shrinks_and_terminates() {
+        let mut limit = palor_runtime::MAX_EMBEDDING_INPUT_BYTES;
+        let mut attempts = 0;
+        while limit > MIN_EMBEDDING_RETRY_BYTES {
+            let next = next_embedding_retry_limit(limit);
+            assert!(next < limit, "retry must never repeat the same input limit");
+            limit = next;
+            attempts += 1;
+            assert!(attempts < 10, "retry schedule must be finite");
+        }
+        assert_eq!(limit, MIN_EMBEDDING_RETRY_BYTES);
+    }
 }

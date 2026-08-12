@@ -1,7 +1,7 @@
 export type View = "chat" | "docs" | "downloads";
 export type Theme = "dark" | "light";
 export type ReasoningMode = "fast" | "think";
-export type InstallState = "available" | "queued" | "downloading" | "indexing" | "installed" | "error";
+export type InstallState = "available" | "updateAvailable" | "queued" | "downloading" | "indexing" | "installed" | "error";
 
 export interface PreflightReport {
   totalMemoryBytes: number;

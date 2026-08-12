@@ -23,6 +23,7 @@ pub fn run() {
             commands::list_docsets,
             commands::list_downloads,
             commands::install_docset,
+            commands::remove_docset,
             commands::ask_palor,
             commands::read_source,
             commands::open_source,

@@ -25,7 +25,7 @@ pub struct Docset {
     pub installed_bytes: u64,
     pub state: String,
     pub progress: f32,
-    pub pages: usize,
+    pub pages: Option<usize>,
     pub accent: String,
     pub initials: String,
 }
@@ -112,15 +112,31 @@ pub fn list_docsets(state: State<'_, AppState>) -> Vec<Docset> {
     docsets()
         .into_iter()
         .map(|mut docset| {
-            if state
+            let manifest_path = state
                 .data_dir
                 .join("docsets")
                 .join(&docset.id)
-                .join("manifest.json")
-                .exists()
-            {
-                docset.state = "installed".into();
-                docset.progress = 100.0;
+                .join("manifest.json");
+            let index_path = state
+                .data_dir
+                .join("indexes")
+                .join(format!("{}.json.zst", docset.id));
+            if manifest_path.exists() && index_path.exists() {
+                let manifest = std::fs::read(&manifest_path).ok().and_then(|bytes| {
+                    serde_json::from_slice::<palor_docs::DocPackManifest>(&bytes).ok()
+                });
+                if let Some(manifest) = manifest {
+                    docset.pages = Some(manifest.page_count);
+                    docset.state = if crate::resources::expected_docset_version(&docset.id)
+                        == Some(manifest.version.as_str())
+                    {
+                        "installed"
+                    } else {
+                        "updateAvailable"
+                    }
+                    .into();
+                    docset.progress = 100.0;
+                }
             }
             docset
         })
@@ -172,6 +188,19 @@ pub async fn install_docset(
         _ => return Err(format!("unknown documentation pack: {id}")),
     };
     crate::resources::install_docset(app, &state, id).await
+}
+
+#[tauri::command]
+pub async fn remove_docset(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let id = match id.as_str() {
+        "python" => palor_core::DocsetId::Python,
+        "cpp" => palor_core::DocsetId::Cpp,
+        "html" => palor_core::DocsetId::Html,
+        "css" => palor_core::DocsetId::Css,
+        "javascript" => palor_core::DocsetId::Javascript,
+        _ => return Err(format!("unknown documentation pack: {id}")),
+    };
+    crate::resources::remove_docset(&state, id).await
 }
 
 #[tauri::command]
@@ -427,10 +456,10 @@ fn docsets() -> Vec<Docset> {
             detail: "Language reference, standard library and tutorials from Python.org.".into(),
             version: "3.14.7".into(),
             compressed_bytes: 16_737_282,
-            installed_bytes: 80_059_722,
+            installed_bytes: 0,
             state: "available".into(),
             progress: 0.0,
-            pages: 571,
+            pages: None,
             accent: "#8fc7b0".into(),
             initials: "PY".into(),
         },
@@ -440,10 +469,10 @@ fn docsets() -> Vec<Docset> {
             detail: "C and C++ language and standard library reference from cppreference.".into(),
             version: "cppreference 2025.02".into(),
             compressed_bytes: 55_740_889,
-            installed_bytes: 346_973_285,
+            installed_bytes: 0,
             state: "available".into(),
             progress: 0.0,
-            pages: 6_640,
+            pages: None,
             accent: "#81a7c8".into(),
             initials: "C++".into(),
         },
@@ -454,10 +483,10 @@ fn docsets() -> Vec<Docset> {
                 .into(),
             version: "MDN 2026.08".into(),
             compressed_bytes: 73_684_713,
-            installed_bytes: 3_035_451,
+            installed_bytes: 0,
             state: "available".into(),
             progress: 0.0,
-            pages: 254,
+            pages: None,
             accent: "#dc9078".into(),
             initials: "<>".into(),
         },
@@ -468,10 +497,10 @@ fn docsets() -> Vec<Docset> {
                 .into(),
             version: "MDN 2026.08".into(),
             compressed_bytes: 73_684_713,
-            installed_bytes: 11_696_917,
+            installed_bytes: 0,
             state: "available".into(),
             progress: 0.0,
-            pages: 1_252,
+            pages: None,
             accent: "#889bd0".into(),
             initials: "#".into(),
         },
@@ -482,10 +511,10 @@ fn docsets() -> Vec<Docset> {
                 .into(),
             version: "MDN 2026.08".into(),
             compressed_bytes: 73_684_713,
-            installed_bytes: 6_950_441,
+            installed_bytes: 0,
             state: "available".into(),
             progress: 0.0,
-            pages: 1_333,
+            pages: None,
             accent: "#d9c273".into(),
             initials: "JS".into(),
         },

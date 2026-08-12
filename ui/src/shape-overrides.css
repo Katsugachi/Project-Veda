@@ -59,3 +59,131 @@
   .download-row { grid-template-columns: 38px 1fr 90px; }
   .download-row > div:nth-child(3) { display: none; }
 }
+
+/* Restrained interaction motion: quick enough to feel responsive, never decorative. */
+body,
+.sidebar,
+.main,
+.topbar,
+.composer,
+.modal,
+.popover,
+.settings-card,
+.doc-card,
+.option-card,
+.setup-doc,
+.icon-btn,
+.nav-item,
+.primary-btn,
+.secondary-btn,
+.button {
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 180ms ease,
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.nav-item:active,
+.icon-btn:active,
+.primary-btn:active,
+.secondary-btn:active,
+.button:active,
+.option-card:active,
+.setup-doc:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.modal-backdrop {
+  animation: palor-fade-in 160ms ease-out both;
+}
+
+.modal,
+.popover {
+  animation: palor-rise-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.onboarding-body > *,
+.settings-card,
+.doc-grid > *,
+.welcome-content > * {
+  animation: palor-content-in 180ms ease-out both;
+}
+
+.doc-grid > *:nth-child(2),
+.welcome-content > *:nth-child(2) {
+  animation-delay: 20ms;
+}
+
+.doc-grid > *:nth-child(3),
+.welcome-content > *:nth-child(3) {
+  animation-delay: 40ms;
+}
+
+::view-transition-old(root) {
+  animation: 120ms ease-in both palor-view-out;
+}
+
+::view-transition-new(root) {
+  animation: 180ms ease-out both palor-view-in;
+}
+
+@keyframes palor-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes palor-rise-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes palor-content-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes palor-view-out {
+  from { opacity: 1; }
+  to { opacity: 0.9; }
+}
+
+@keyframes palor-view-in {
+  from { opacity: 0.88; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+.update-check {
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
+.doc-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.doc-footer .remove-doc {
+  height: 30px;
+  padding-inline: 10px;
+}

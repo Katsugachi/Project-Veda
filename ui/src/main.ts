@@ -59,6 +59,10 @@ const app: HTMLDivElement = mount;
 
 document.documentElement.dataset.theme = state.theme;
 
+function isDocInstalled(doc: Docset): boolean {
+  return doc.state === "installed" || doc.state === "updateAvailable";
+}
+
 function navItem(view: View, label: string, iconName: "chat" | "book" | "download", badge?: number): string {
   const active = state.view === view ? " active" : "";
   return `<button class="nav-item${active}" data-view="${view}" title="${label}">${icon(iconName)}<span class="nav-label">${label}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
@@ -100,7 +104,7 @@ function attachmentChips(removable = true): string {
 }
 
 function renderComposer(): string {
-  const installed = state.docsets.filter((doc) => doc.state === "installed").length;
+  const installed = state.docsets.filter(isDocInstalled).length;
   return `<div class="composer-wrap">
     <div class="composer-shell">
       ${attachmentChips()}
@@ -173,13 +177,18 @@ function renderChat(): string {
 }
 
 function docAction(doc: Docset): string {
-  if (doc.state === "installed") return `<div class="installed-check">${icon("check")} Installed</div>`;
+  if (doc.state === "installed") {
+    return `<div class="installed-check">${icon("check")} Installed</div><button class="button remove-doc" data-docset="${doc.id}">Remove</button>`;
+  }
+  if (doc.state === "updateAvailable") {
+    return `<div class="update-check">Update available</div><div class="doc-action-buttons"><button class="button remove-doc" data-docset="${doc.id}">Remove</button><button class="button primary install-doc" data-docset="${doc.id}">Update</button></div>`;
+  }
   if (doc.state === "downloading" || doc.state === "indexing") return `<div class="progress-track"><div class="progress-value" style="width:${doc.progress}%"></div></div><span class="download-state">${doc.state} ${Math.round(doc.progress)}%</span>`;
   return `<span></span><button class="button primary install-doc" data-docset="${doc.id}">${icon("download")} Download</button>`;
 }
 
 function renderDocs(): string {
-  const installed = state.docsets.filter((doc) => doc.state === "installed");
+  const installed = state.docsets.filter(isDocInstalled);
   const indexedPages = installed.reduce((sum, doc) => sum + (doc.pages ?? 0), 0);
   return `<section class="content-view"><div class="content-inner">
     <div class="content-header">
@@ -190,7 +199,7 @@ function renderDocs(): string {
     <div class="doc-grid">${state.docsets.map((doc) => `<article class="doc-card" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
       <div class="doc-head"><div class="doc-icon">${doc.initials}</div><div class="doc-copy"><div class="doc-name">${doc.name}</div><div class="doc-version">${doc.version}</div></div></div>
       <div class="doc-description">${doc.detail}</div>
-      <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span><span>${doc.pages?.toLocaleString()} pages</span></div>
+      <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span>${doc.pages !== undefined ? `<span>${doc.pages.toLocaleString()} installed pages</span>` : ""}</div>
       <div class="doc-footer">${docAction(doc)}</div>
     </article>`).join("")}</div>
   </div></section>`;
@@ -304,11 +313,26 @@ function render(): void {
   if (state.messages.length) requestAnimationFrame(scrollMessages);
 }
 
+type TransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => unknown;
+};
+
+function smoothRender(): void {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const start = (document as TransitionDocument).startViewTransition;
+  if (!reducedMotion && start) {
+    start.call(document, () => render());
+  } else {
+    render();
+  }
+}
+
 let renderTimer: number | undefined;
 function scheduleRender(): void {
   if (renderTimer !== undefined) return;
   renderTimer = window.setTimeout(() => {
     renderTimer = undefined;
+    if (state.setupRunning && document.querySelector("#setupProgressBar")) return;
     render();
   }, 250);
 }
@@ -317,7 +341,10 @@ function toggleTheme(): void {
   state.theme = state.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = state.theme;
   localStorage.setItem("palor:theme", state.theme);
-  render();
+  const toggle = document.querySelector<HTMLElement>("#themeToggle");
+  if (toggle) toggle.innerHTML = icon(state.theme === "dark" ? "moon" : "sun");
+  const detail = document.querySelector<HTMLElement>("#settingsTheme")?.closest(".setting-row")?.querySelector<HTMLElement>(".setting-detail");
+  if (detail) detail.textContent = state.theme === "dark" ? "Dark" : "Light";
 }
 
 function toast(message: string): void {
@@ -334,7 +361,7 @@ function scrollMessages(): void {
 function setView(view: View): void {
   state.view = view;
   state.modelOpen = false;
-  render();
+  smoothRender();
 }
 
 async function installDocsetBlocking(id: string): Promise<void> {
@@ -346,19 +373,55 @@ async function installDocsetBlocking(id: string): Promise<void> {
   state.setupProgress = 0;
   state.setupStatus = `Preparing ${doc.name}…`;
   doc.state = "downloading";
-  render();
+  smoothRender();
   try {
     await bridge.installDocset(id);
-    if (!bridge.isDesktop()) await new Promise((resolve) => setTimeout(resolve, 500));
-    doc.state = "installed";
-    doc.progress = 100;
+    [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
     state.setupRunning = false;
     state.onboardingOpen = false;
-    render();
+    smoothRender();
   } catch (error) {
     state.setupError = error instanceof Error ? error.message : String(error);
     state.setupRunning = false;
-    render();
+    smoothRender();
+  }
+}
+
+function updateSetupProgress(status: string, progress = 0): void {
+  state.setupStatus = status;
+  state.setupProgress = progress;
+  const bar = document.querySelector<HTMLElement>("#setupProgressBar");
+  const text = document.querySelector<HTMLElement>("#setupProgressText");
+  if (bar) bar.style.width = `${progress}%`;
+  if (text) text.textContent = status;
+}
+
+async function removeDocsetBlocking(id: string): Promise<void> {
+  const doc = state.docsets.find((item) => item.id === id);
+  if (!doc || !isDocInstalled(doc)) return;
+  if (state.docsets.filter(isDocInstalled).length <= 1) {
+    toast("Keep at least one documentation pack installed.");
+    return;
+  }
+  if (!window.confirm(`Remove ${doc.name} documentation from this device?`)) return;
+
+  state.onboardingOpen = true;
+  state.setupRunning = true;
+  state.setupError = undefined;
+  state.setupProgress = 0;
+  state.setupStatus = `Removing ${doc.name}…`;
+  smoothRender();
+  try {
+    await bridge.removeDocset(id);
+    [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
+    state.setupRunning = false;
+    state.onboardingOpen = false;
+    smoothRender();
+  } catch (error) {
+    state.setupRunning = false;
+    state.onboardingOpen = false;
+    smoothRender();
+    toast(`Could not remove ${doc.name}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -368,15 +431,13 @@ async function runSetup(): Promise<void> {
   state.setupError = undefined;
   state.setupProgress = 0;
   state.setupStatus = "Preparing model files…";
-  render();
+  smoothRender();
   try {
     await bridge.prepareResources(state.selectedQuant);
     for (const id of state.setupDocsets) {
       const doc = state.docsets.find((item) => item.id === id);
       if (doc?.state === "installed") continue;
-      state.setupStatus = `Preparing ${doc?.name ?? id}…`;
-      state.setupProgress = 0;
-      render();
+      updateSetupProgress(`Preparing ${doc?.name ?? id}…`);
       await bridge.installDocset(id);
     }
     state.docsets = await bridge.docsets();
@@ -384,11 +445,11 @@ async function runSetup(): Promise<void> {
     localStorage.setItem("palor:onboarded", "true");
     state.setupRunning = false;
     state.onboardingOpen = false;
-    render();
+    smoothRender();
   } catch (error) {
     state.setupError = error instanceof Error ? error.message : String(error);
     state.setupRunning = false;
-    render();
+    smoothRender();
   }
 }
 
@@ -400,7 +461,7 @@ async function addFiles(files: FileList): Promise<void> {
     const language = file.name.split(".").pop()?.toLowerCase() ?? "text";
     state.attachments.push({ id: crypto.randomUUID(), name: file.name, bytes: file.size, language, content });
   }
-  render();
+  smoothRender();
 }
 
 async function sendMessage(): Promise<void> {
@@ -414,18 +475,10 @@ async function sendMessage(): Promise<void> {
   state.messages.push(assistant);
   state.attachments = [];
   state.busy = true;
-  render();
+  smoothRender();
   try {
-    const response = await bridge.ask({ chatId: "local", message: text, mode: state.mode, docsets: state.docsets.filter((doc) => doc.state === "installed").map((doc) => doc.id), attachments });
-    assistant.content = "";
-    const chunks = response.content.match(/.{1,7}/gs) ?? [response.content];
-    for (const chunk of chunks) {
-      assistant.content += chunk;
-      const body = document.querySelector<HTMLElement>(`[data-message-id="${assistant.id}"] .message-body`);
-      if (body) body.innerHTML = `${renderMarkdown(assistant.content)}<span class="stream-caret"></span>`;
-      scrollMessages();
-      await new Promise((resolve) => setTimeout(resolve, 16));
-    }
+    const response = await bridge.ask({ chatId: "local", message: text, mode: state.mode, docsets: state.docsets.filter(isDocInstalled).map((doc) => doc.id), attachments });
+    assistant.content = response.content;
     assistant.sources = response.sources;
     assistant.streaming = false;
   } catch (error) {
@@ -433,35 +486,40 @@ async function sendMessage(): Promise<void> {
     assistant.streaming = false;
   } finally {
     state.busy = false;
-    render();
+    smoothRender();
   }
 }
 
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view as View)));
   document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; setView("chat"); });
-  document.querySelector("#collapseSidebar")?.addEventListener("click", () => { state.sidebarCollapsed = !state.sidebarCollapsed; localStorage.setItem("palor:sidebar", state.sidebarCollapsed ? "collapsed" : "open"); render(); });
+  document.querySelector("#collapseSidebar")?.addEventListener("click", () => {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    localStorage.setItem("palor:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
+    document.querySelector(".app-shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  });
   document.querySelector("#themeToggle")?.addEventListener("click", toggleTheme);
   document.querySelector("#settingsTheme")?.addEventListener("click", toggleTheme);
-  document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; render(); });
-  document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; render(); });
-  document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; render(); } });
-  document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; render(); });
-  document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; render(); }));
+  document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; smoothRender(); });
+  document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; smoothRender(); });
+  document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; smoothRender(); } });
+  document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; smoothRender(); });
+  document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; smoothRender(); }));
   document.querySelector("#sendButton")?.addEventListener("click", () => void sendMessage());
   const input = document.querySelector<HTMLTextAreaElement>("#composerInput");
   input?.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; });
   input?.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } });
   document.querySelector("#attachButton")?.addEventListener("click", () => document.querySelector<HTMLInputElement>("#fileInput")?.click());
   document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", (event) => { const files = (event.currentTarget as HTMLInputElement).files; if (files) void addFiles(files); });
-  document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); render(); }));
+  document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); smoothRender(); }));
   document.querySelectorAll<HTMLElement>(".install-doc").forEach((button) => button.addEventListener("click", () => void installDocsetBlocking(button.dataset.docset ?? "")));
+  document.querySelectorAll<HTMLElement>(".remove-doc").forEach((button) => button.addEventListener("click", () => void removeDocsetBlocking(button.dataset.docset ?? "")));
   document.querySelectorAll<HTMLElement>("[data-source]").forEach((button) => button.addEventListener("click", () => {
     const url = button.dataset.source ?? "";
-    void bridge.readSource(url).then((source) => { state.reader = source; render(); }).catch((error: unknown) => toast(`Could not open source: ${error instanceof Error ? error.message : String(error)}`));
+    void bridge.readSource(url).then((source) => { state.reader = source; smoothRender(); }).catch((error: unknown) => toast(`Could not open source: ${error instanceof Error ? error.message : String(error)}`));
   }));
-  document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; render(); });
-  document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; render(); } });
+  document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; smoothRender(); });
+  document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; smoothRender(); } });
   document.querySelector("#dataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
   document.querySelector("#settingsDataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
   document.querySelector<HTMLInputElement>("#docSearch")?.addEventListener("input", (event) => {
@@ -471,9 +529,9 @@ function bindEvents(): void {
     });
   });
   document.querySelector("#scopeButton")?.addEventListener("click", () => setView("docs"));
-  document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); render(); });
+  document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); smoothRender(); });
   document.querySelector("#setupNext")?.addEventListener("click", () => {
-    if (state.setupStep < 2) { state.setupStep += 1; render(); return; }
+    if (state.setupStep < 2) { state.setupStep += 1; smoothRender(); return; }
     void runSetup();
   });
   document.querySelector("#setupRetry")?.addEventListener("click", () => {
@@ -484,10 +542,10 @@ function bindEvents(): void {
     state.setupError = undefined;
     state.setupRunning = false;
     state.setupStep = 2;
-    render();
+    smoothRender();
   });
-  document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; render(); }));
-  document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); render(); }));
+  document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; smoothRender(); }));
+  document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); smoothRender(); }));
 }
 
 async function init(): Promise<void> {
@@ -500,7 +558,7 @@ async function init(): Promise<void> {
   state.docsets = docsets;
   state.downloads = downloads;
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
-  const docsReady = docsets.some((doc) => doc.state === "installed");
+  const docsReady = docsets.some(isDocInstalled);
   if (bridge.isDesktop() && (!modelReady || !docsReady)) {
     localStorage.removeItem("palor:onboarded");
     state.onboardingOpen = true;
@@ -515,15 +573,8 @@ async function init(): Promise<void> {
       doc.state = item.state === "installed" ? "installed" : "indexing";
     }
     if (state.setupRunning) {
-      state.setupProgress = item.progress;
-      state.setupStatus = item.detail || item.name;
-      const bar = document.querySelector<HTMLElement>("#setupProgressBar");
-      const text = document.querySelector<HTMLElement>("#setupProgressText");
-      if (bar && text) {
-        bar.style.width = `${item.progress}%`;
-        text.textContent = state.setupStatus;
-        return;
-      }
+      updateSetupProgress(item.detail || item.name, item.progress);
+      if (document.querySelector("#setupProgressBar")) return;
     }
     scheduleRender();
   });
