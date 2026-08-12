@@ -1,0 +1,25 @@
+# Rust
+/target/
+**/target/
+
+# Frontend
+/node_modules/
+/dist/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local Palor state
+/.palor/
+*.part
+*.log
+
+# Signing secrets
+*.p12
+*.pfx
+*.mobileprovision
+.env
+.env.*

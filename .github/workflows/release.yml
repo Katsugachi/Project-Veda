@@ -1,0 +1,80 @@
+name: Unsigned desktop release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run tauri build -- --target universal-apple-darwin --bundles dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Palor-macOS-universal-DMG
+          path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+  windows-x64:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Palor-Windows-x64-Setup
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+
+  windows-arm64:
+    # This preview image includes native Visual Studio ARM64 build tools.
+    # The older windows-11-arm image does not include Visual Studio.
+    runs-on: windows-11-vs2026-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Palor-Windows-ARM64-Setup
+          path: target/aarch64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, windows-x64, windows-arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: artifacts/**/*

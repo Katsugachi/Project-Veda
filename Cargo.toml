@@ -1,0 +1,42 @@
+[workspace]
+members = [
+  "crates/palor-core",
+  "crates/palor-downloads",
+  "crates/palor-search",
+  "crates/palor-runtime",
+  "crates/palor-docs",
+  "tools/docpack",
+  "apps/desktop/src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Palor contributors"]
+rust-version = "1.82"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1.10"
+futures-util = "0.3"
+hex = "0.4"
+parking_lot = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sysinfo = "0.37"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+panic = "abort"
+strip = "symbols"

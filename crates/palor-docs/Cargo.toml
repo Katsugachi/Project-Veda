@@ -1,0 +1,21 @@
+[package]
+name = "palor-docs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+palor-core = { path = "../palor-core" }
+regex = "1.11"
+scraper = "0.24"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4"
+thiserror.workspace = true
+walkdir = "2.5"
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3.20"
