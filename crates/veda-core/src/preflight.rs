@@ -54,7 +54,7 @@ pub fn evaluate_preflight(snapshot: HardwareSnapshot) -> PreflightReport {
             "An SSD is strongly recommended for model loading and documentation indexing.".into(),
         );
     } else if snapshot.disk_kind == DiskKind::Unknown {
-        warnings.push("Palor could not verify that the selected data drive is an SSD.".into());
+        warnings.push("Veda could not verify that the selected data drive is an SSD.".into());
     }
     if snapshot.available_memory_bytes < 3 * GIB {
         warnings.push("Less than 3 GiB of memory is currently available; close other apps before loading the model.".into());

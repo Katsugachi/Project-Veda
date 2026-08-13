@@ -1,8 +1,8 @@
-use palor_core::{ReasoningMode, SearchQueryPlan, SEARCH_PLANNER_SYSTEM_PROMPT};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
+use veda_core::{ReasoningMode, SearchQueryPlan, SEARCH_PLANNER_SYSTEM_PROMPT};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {

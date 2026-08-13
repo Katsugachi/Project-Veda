@@ -1,16 +1,16 @@
 [package]
-name = "palor-desktop"
+name = "veda-desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "palor_desktop_lib"
+name = "veda_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "palor"
+name = "veda"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -19,11 +19,11 @@ tauri-build = { version = "2.4", features = [] }
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-palor-core = { path = "../../../crates/palor-core" }
-palor-downloads = { path = "../../../crates/palor-downloads" }
-palor-docs = { path = "../../../crates/palor-docs" }
-palor-runtime = { path = "../../../crates/palor-runtime" }
-palor-search = { path = "../../../crates/palor-search" }
+veda-core = { path = "../../../crates/veda-core" }
+veda-downloads = { path = "../../../crates/veda-downloads" }
+veda-docs = { path = "../../../crates/veda-docs" }
+veda-runtime = { path = "../../../crates/veda-runtime" }
+veda-search = { path = "../../../crates/veda-search" }
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

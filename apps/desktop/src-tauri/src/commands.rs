@@ -1,7 +1,4 @@
 use crate::state::AppState;
-use palor_core::{
-    default_catalog, AskRequest, AskResponse, Catalog, HardwareSnapshot, PreflightReport, SourceRef,
-};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -13,6 +10,10 @@ use std::{
 use sysinfo::{Disks, System};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
+use veda_core::{
+    contextual_error, default_catalog, AskRequest, AskResponse, Catalog, HardwareSnapshot,
+    PreflightReport, SourceRef,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,15 +65,15 @@ pub async fn system_preflight(state: State<'_, AppState>) -> Result<PreflightRep
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
         .or_else(|| disks.iter().max_by_key(|disk| disk.available_space()));
     let (free_disk_bytes, disk_kind) =
-        disk.map_or((0, palor_core::preflight::DiskKind::Unknown), |disk| {
+        disk.map_or((0, veda_core::preflight::DiskKind::Unknown), |disk| {
             let kind = match disk.kind() {
-                sysinfo::DiskKind::SSD => palor_core::preflight::DiskKind::Ssd,
-                sysinfo::DiskKind::HDD => palor_core::preflight::DiskKind::Hdd,
-                _ => palor_core::preflight::DiskKind::Unknown,
+                sysinfo::DiskKind::SSD => veda_core::preflight::DiskKind::Ssd,
+                sysinfo::DiskKind::HDD => veda_core::preflight::DiskKind::Hdd,
+                _ => veda_core::preflight::DiskKind::Unknown,
             };
             (disk.available_space(), kind)
         });
-    Ok(palor_core::evaluate_preflight(HardwareSnapshot {
+    Ok(veda_core::evaluate_preflight(HardwareSnapshot {
         total_memory_bytes: system.total_memory(),
         available_memory_bytes: system.available_memory(),
         free_disk_bytes,
@@ -100,8 +101,8 @@ pub async fn prepare_resources(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let quant = match quant.as_str() {
-        "q5" => palor_core::ModelQuant::Q5,
-        "q8" => palor_core::ModelQuant::Q8,
+        "q5" => veda_core::ModelQuant::Q5,
+        "q8" => veda_core::ModelQuant::Q8,
         _ => return Err(format!("unsupported model quantization: {quant}")),
     };
     crate::resources::prepare(app, &state, quant).await
@@ -123,7 +124,7 @@ pub fn list_docsets(state: State<'_, AppState>) -> Vec<Docset> {
                 .join(format!("{}.json.zst", docset.id));
             if manifest_path.exists() && index_path.exists() {
                 let manifest = std::fs::read(&manifest_path).ok().and_then(|bytes| {
-                    serde_json::from_slice::<palor_docs::DocPackManifest>(&bytes).ok()
+                    serde_json::from_slice::<veda_docs::DocPackManifest>(&bytes).ok()
                 });
                 if let Some(manifest) = manifest {
                     docset.pages = Some(manifest.page_count);
@@ -149,13 +150,13 @@ pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadItem> {
     for asset in default_catalog().assets {
         let filename = asset.url.rsplit('/').next().unwrap_or(&asset.id);
         let location = match asset.kind {
-            palor_core::AssetKind::ChatModel | palor_core::AssetKind::EmbeddingModel => {
+            veda_core::AssetKind::ChatModel | veda_core::AssetKind::EmbeddingModel => {
                 state.data_dir.join("models").join(filename)
             }
-            palor_core::AssetKind::LlamaRuntime | palor_core::AssetKind::RuntimeDependency => {
+            veda_core::AssetKind::LlamaRuntime | veda_core::AssetKind::RuntimeDependency => {
                 state.data_dir.join("runtime").join(&asset.id)
             }
-            palor_core::AssetKind::Docset => continue,
+            veda_core::AssetKind::Docset => continue,
         };
         if location.exists() && !items.iter().any(|item| item.id == asset.id) {
             items.push(DownloadItem {
@@ -180,11 +181,11 @@ pub async fn install_docset(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let id = match id.as_str() {
-        "python" => palor_core::DocsetId::Python,
-        "cpp" => palor_core::DocsetId::Cpp,
-        "html" => palor_core::DocsetId::Html,
-        "css" => palor_core::DocsetId::Css,
-        "javascript" => palor_core::DocsetId::Javascript,
+        "python" => veda_core::DocsetId::Python,
+        "cpp" => veda_core::DocsetId::Cpp,
+        "html" => veda_core::DocsetId::Html,
+        "css" => veda_core::DocsetId::Css,
+        "javascript" => veda_core::DocsetId::Javascript,
         _ => return Err(format!("unknown documentation pack: {id}")),
     };
     crate::resources::install_docset(app, &state, id).await
@@ -193,18 +194,18 @@ pub async fn install_docset(
 #[tauri::command]
 pub async fn remove_docset(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let id = match id.as_str() {
-        "python" => palor_core::DocsetId::Python,
-        "cpp" => palor_core::DocsetId::Cpp,
-        "html" => palor_core::DocsetId::Html,
-        "css" => palor_core::DocsetId::Css,
-        "javascript" => palor_core::DocsetId::Javascript,
+        "python" => veda_core::DocsetId::Python,
+        "cpp" => veda_core::DocsetId::Cpp,
+        "html" => veda_core::DocsetId::Html,
+        "css" => veda_core::DocsetId::Css,
+        "javascript" => veda_core::DocsetId::Javascript,
         _ => return Err(format!("unknown documentation pack: {id}")),
     };
     crate::resources::remove_docset(&state, id).await
 }
 
 #[tauri::command]
-pub async fn ask_palor(
+pub async fn ask_veda(
     request: AskRequest,
     state: State<'_, AppState>,
 ) -> Result<AskResponse, String> {
@@ -225,7 +226,7 @@ pub async fn ask_palor(
             .await
             .map_err(|_| "No verified llama.cpp runtime is active. Run setup again.".to_string())?,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| contextual_error("The active runtime record is unreadable", &error))?;
     let index = load_search_index(&state, &request.docsets).await?;
     if index.is_empty() {
         return Ok(AskResponse {
@@ -241,14 +242,14 @@ pub async fn ask_palor(
         .and_then(|value| value.to_str())
         .is_some_and(|name| name.contains("Q8"))
     {
-        palor_core::ModelQuant::Q8
+        veda_core::ModelQuant::Q8
     } else {
-        palor_core::ModelQuant::Q5
+        veda_core::ModelQuant::Q5
     };
-    let context = palor_core::context_budget(total_memory, quant).context_tokens;
+    let context = veda_core::context_budget(total_memory, quant).context_tokens;
     let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
-    let mut chat_sidecar = palor_runtime::LlamaSidecar::spawn(palor_runtime::SidecarConfig {
+    let mut chat_sidecar = veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
         executable: active.executable.clone(),
         model,
         context_tokens: context,
@@ -258,13 +259,13 @@ pub async fn ask_palor(
         threads,
     })
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| contextual_error("Could not start the llama.cpp runtime", &error))?;
     let embedding_model = state
         .data_dir
         .join("models")
         .join("bge-small-en-v1.5-q8_0.gguf");
     let mut embedding_sidecar =
-        match palor_runtime::LlamaSidecar::spawn(palor_runtime::SidecarConfig {
+        match veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
             executable: active.executable,
             model: embedding_model,
             context_tokens: 512,
@@ -278,17 +279,17 @@ pub async fn ask_palor(
             Ok(sidecar) => sidecar,
             Err(error) => {
                 let _ = chat_sidecar.stop().await;
-                return Err(error.to_string());
+                return Err(contextual_error("Could not start local search", &error));
             }
         };
-    let llama = palor_runtime::LlamaClient::new(&chat_sidecar.base_url, &chat_sidecar.api_key)
-        .map_err(|error| error.to_string())?;
-    let embed = palor_runtime::EmbeddingClient::new(
-        &embedding_sidecar.base_url,
-        &embedding_sidecar.api_key,
-    )
-    .map_err(|error| error.to_string())?;
-    let engine = palor_runtime::PalorEngine::new(
+    let llama = veda_runtime::LlamaClient::new(&chat_sidecar.base_url, &chat_sidecar.api_key)
+        .map_err(|error| contextual_error("Could not reach the local model", &error))?;
+    let embed =
+        veda_runtime::EmbeddingClient::new(&embedding_sidecar.base_url, &embedding_sidecar.api_key)
+            .map_err(|error| {
+                contextual_error("Could not reach the local search runtime", &error)
+            })?;
+    let engine = veda_runtime::VedaEngine::new(
         llama,
         LocalRetriever {
             index,
@@ -296,7 +297,10 @@ pub async fn ask_palor(
             allowed_docsets: request.docsets.clone(),
         },
     );
-    let result = engine.ask(request).await.map_err(|error| error.to_string());
+    let result = engine
+        .ask(request)
+        .await
+        .map_err(|error| contextual_error("The local model could not answer", &error));
     let _ = embedding_sidecar.stop().await;
     let _ = chat_sidecar.stop().await;
     result
@@ -310,17 +314,17 @@ struct ActiveRuntime {
 }
 
 struct LocalRetriever {
-    index: Arc<palor_search::HybridIndex>,
-    embed: palor_runtime::EmbeddingClient,
-    allowed_docsets: Vec<palor_core::DocsetId>,
+    index: Arc<veda_search::HybridIndex>,
+    embed: veda_runtime::EmbeddingClient,
+    allowed_docsets: Vec<veda_core::DocsetId>,
 }
 
 #[async_trait::async_trait]
-impl palor_runtime::Retriever for LocalRetriever {
+impl veda_runtime::Retriever for LocalRetriever {
     async fn hybrid_search(
         &self,
-        plan: &palor_core::SearchQueryPlan,
-    ) -> Result<Vec<palor_runtime::RetrievedChunk>, anyhow::Error> {
+        plan: &veda_core::SearchQueryPlan,
+    ) -> Result<Vec<veda_runtime::RetrievedChunk>, anyhow::Error> {
         let query_vectors = self.embed.embed_queries(&plan.queries).await?;
         let docsets = if plan.docsets.is_empty() {
             self.allowed_docsets.clone()
@@ -333,14 +337,14 @@ impl palor_runtime::Retriever for LocalRetriever {
                 })
                 .collect()
         };
-        let mut merged: HashMap<String, palor_runtime::RetrievedChunk> = HashMap::new();
+        let mut merged: HashMap<String, veda_runtime::RetrievedChunk> = HashMap::new();
         for (query, vector) in plan.queries.iter().zip(query_vectors) {
             let hits = self.index.search(
                 query,
                 &vector,
                 &plan.symbols,
                 &docsets,
-                palor_search::HybridSearchOptions {
+                veda_search::HybridSearchOptions {
                     limit: plan.result_count,
                     candidate_limit: 48,
                     ..Default::default()
@@ -350,7 +354,7 @@ impl palor_runtime::Retriever for LocalRetriever {
                 let Some(chunk) = self.index.chunk(hit.document) else {
                     continue;
                 };
-                let candidate = palor_runtime::RetrievedChunk {
+                let candidate = veda_runtime::RetrievedChunk {
                     docset: chunk.docset.as_str().into(),
                     version: chunk.version.clone(),
                     title: chunk.title.clone(),
@@ -380,44 +384,46 @@ impl palor_runtime::Retriever for LocalRetriever {
 
 async fn load_search_index(
     state: &AppState,
-    _selected: &[palor_core::DocsetId],
-) -> Result<Arc<palor_search::HybridIndex>, String> {
+    _selected: &[veda_core::DocsetId],
+) -> Result<Arc<veda_search::HybridIndex>, String> {
     if let Some(index) = state.search_index.read().clone() {
         return Ok(index);
     }
     let index_dir = state.data_dir.join("indexes");
     let mut paths = Vec::new();
-    for docset in palor_core::DocsetId::ALL {
+    for docset in veda_core::DocsetId::ALL {
         let path = index_dir.join(format!("{}.json.zst", docset.as_str()));
         if path.exists() {
             paths.push(path);
         }
     }
     let chunks =
-        tokio::task::spawn_blocking(move || -> Result<Vec<palor_search::SearchChunk>, String> {
+        tokio::task::spawn_blocking(move || -> Result<Vec<veda_search::SearchChunk>, String> {
             let mut chunks = Vec::new();
             for path in paths {
-                let file = File::open(&path).map_err(|error| error.to_string())?;
-                let decoder =
-                    zstd::Decoder::new(BufReader::new(file)).map_err(|error| error.to_string())?;
-                let mut loaded: Vec<palor_search::SearchChunk> =
-                    serde_json::from_reader(decoder).map_err(|error| error.to_string())?;
+                let file = File::open(&path)
+                    .map_err(|error| contextual_error("Could not read a search index", &error))?;
+                let decoder = zstd::Decoder::new(BufReader::new(file))
+                    .map_err(|error| contextual_error("Could not read a search index", &error))?;
+                let mut loaded: Vec<veda_search::SearchChunk> = serde_json::from_reader(decoder)
+                    .map_err(|error| contextual_error("Could not read a search index", &error))?;
                 chunks.append(&mut loaded);
             }
             Ok(chunks)
         })
         .await
-        .map_err(|error| error.to_string())??;
-    let index =
-        Arc::new(palor_search::HybridIndex::build(chunks).map_err(|error| error.to_string())?);
+        .map_err(|error| contextual_error("The search import stopped unexpectedly", &error))??;
+    let hybrid = veda_search::HybridIndex::build(chunks)
+        .map_err(|error| contextual_error("Could not build the search index", &error))?;
+    let index = Arc::new(hybrid);
     *state.search_index.write() = Some(index.clone());
     Ok(index)
 }
 
 #[tauri::command]
 pub async fn read_source(url: String, state: State<'_, AppState>) -> Result<ReaderSource, String> {
-    if !url.starts_with("palor://docs/") {
-        return Err("only local Palor documentation URLs may be opened".into());
+    if !url.starts_with("veda://docs/") {
+        return Err("only local Veda documentation URLs may be opened".into());
     }
     let index = load_search_index(&state, &[]).await?;
     let chunk = index
@@ -434,8 +440,8 @@ pub async fn read_source(url: String, state: State<'_, AppState>) -> Result<Read
 
 #[tauri::command]
 pub fn open_source(url: String) -> Result<(), String> {
-    if !url.starts_with("palor://docs/") {
-        return Err("only local Palor documentation URLs may be opened".into());
+    if !url.starts_with("veda://docs/") {
+        return Err("only local Veda documentation URLs may be opened".into());
     }
     // The reader route consumes this URL in the UI; no external browser is used.
     Ok(())
@@ -445,7 +451,7 @@ pub fn open_source(url: String) -> Result<(), String> {
 pub fn reveal_data_folder(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     app.opener()
         .open_path(state.data_dir.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|error| error.to_string())
+        .map_err(|error| contextual_error("Could not open the data folder", &error))
 }
 
 fn docsets() -> Vec<Docset> {

@@ -2705,7 +2705,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-core"
+name = "veda-core"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -2714,17 +2714,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-desktop"
+name = "veda-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "flate2",
- "palor-core",
- "palor-docs",
- "palor-downloads",
- "palor-runtime",
- "palor-search",
+ "veda-core",
+ "veda-docs",
+ "veda-downloads",
+ "veda-runtime",
+ "veda-search",
  "parking_lot",
  "serde",
  "serde_json",
@@ -2744,23 +2744,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-docpack"
+name = "veda-docpack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "palor-core",
- "palor-docs",
+ "veda-core",
+ "veda-docs",
  "regex",
  "scraper",
  "walkdir",
 ]
 
 [[package]]
-name = "palor-docs"
+name = "veda-docs"
 version = "0.1.0"
 dependencies = [
- "palor-core",
+ "veda-core",
  "regex",
  "scraper",
  "serde",
@@ -2774,7 +2774,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-downloads"
+name = "veda-downloads"
 version = "0.1.0"
 dependencies = [
  "bytes",
@@ -2790,12 +2790,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-runtime"
+name = "veda-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "palor-core",
+ "veda-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2806,10 +2806,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "palor-search"
+name = "veda-search"
 version = "0.1.0"
 dependencies = [
- "palor-core",
+ "veda-core",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

@@ -29,8 +29,8 @@ export const initialDownloads: DownloadItem[] = [
 ];
 
 const sources = [
-  { id: "S1", docset: "Python 3.14", title: "Coroutines and Tasks", section: "Task Groups", url: "palor://docs/python/library/asyncio-task#task-groups", score: .94 },
-  { id: "S2", docset: "Python 3.14", title: "Exceptions", section: "Exception groups", url: "palor://docs/python/library/exceptions#ExceptionGroup", score: .87 },
+  { id: "S1", docset: "Python 3.14", title: "Coroutines and Tasks", section: "Task Groups", url: "veda://docs/python/library/asyncio-task#task-groups", score: .94 },
+  { id: "S2", docset: "Python 3.14", title: "Exceptions", section: "Exception groups", url: "veda://docs/python/library/exceptions#ExceptionGroup", score: .87 },
 ];
 
 export async function mockAsk(request: AskRequest): Promise<AskResponse> {
@@ -41,8 +41,8 @@ export async function mockAsk(request: AskRequest): Promise<AskResponse> {
       messageId: crypto.randomUUID(),
       content: "`std::vector` move construction is normally constant time because ownership of the allocation is transferred to the destination. The moved-from vector remains valid but its state is unspecified, so you may destroy it, assign to it, or call operations that do not rely on its previous contents. [S1]\n\n```cpp\nstd::vector<int> source{1, 2, 3};\nauto destination = std::move(source);\n// source is valid, but do not assume it is empty.\n```\n\nAllocator rules can change the complexity of move assignment when the allocators cannot be propagated and do not compare equal. [S2]",
       sources: [
-        { id: "S1", docset: "cppreference", title: "std::vector::vector", section: "Move constructor", url: "palor://docs/cpp/container/vector/vector", score: .96 },
-        { id: "S2", docset: "cppreference", title: "std::vector::operator=", section: "Move assignment", url: "palor://docs/cpp/container/vector/operator_assign", score: .9 },
+        { id: "S1", docset: "cppreference", title: "std::vector::vector", section: "Move constructor", url: "veda://docs/cpp/container/vector/vector", score: .96 },
+        { id: "S2", docset: "cppreference", title: "std::vector::operator=", section: "Move assignment", url: "veda://docs/cpp/container/vector/operator_assign", score: .9 },
       ],
       trace: { queries: ["std::vector move construction complexity", "vector move allocator propagation"], lexicalHits: 24, semanticHits: 24, elapsedMs: 84 },
     };

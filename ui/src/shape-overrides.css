@@ -43,7 +43,7 @@
 
 .tool-button { border-radius: 6px; }
 .doc-card:hover { transform: none; }
-.modal-backdrop { backdrop-filter: none; animation: none; }
+.modal-backdrop { backdrop-filter: none; }
 .onboarding { box-shadow: 0 16px 42px rgba(0, 0, 0, .28); }
 
 .library-summary { margin: -12px 0 14px; color: var(--muted); font-size: 10.5px; }
@@ -96,63 +96,78 @@ body,
   transform: translateY(1px) scale(0.99);
 }
 
-.modal-backdrop {
-  animation: palor-fade-in 160ms ease-out both;
+/* Entrance animations carry an `.entering` class that is applied exactly once
+   when a surface opens. Re-renders (step changes, progress updates, toggles)
+   never replay them, so clicks can't make the window flash. */
+.modal-backdrop.entering {
+  animation: veda-fade-in 160ms ease-out both;
 }
 
-.modal,
-.popover {
-  animation: palor-rise-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.modal.entering,
+.popover.entering {
+  animation: veda-rise-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.onboarding-body > *,
-.settings-card,
-.doc-grid > *,
-.welcome-content > * {
-  animation: palor-content-in 180ms ease-out both;
+.onboarding-body > * {
+  animation: veda-content-in 180ms ease-out both;
 }
 
-.doc-grid > *:nth-child(2),
-.welcome-content > *:nth-child(2) {
+.doc-grid.enter > * {
+  animation: veda-content-in 180ms ease-out both;
+}
+
+.doc-grid.enter > *:nth-child(2) {
   animation-delay: 20ms;
 }
 
-.doc-grid > *:nth-child(3),
-.welcome-content > *:nth-child(3) {
+.doc-grid.enter > *:nth-child(3) {
   animation-delay: 40ms;
 }
 
-::view-transition-old(root) {
-  animation: 120ms ease-in both palor-view-out;
-}
-
+/* View navigation crossfades only the `.view` content area (it carries
+   `view-transition-name: veda-view`). The root element must not participate,
+   otherwise the whole window would flash on every navigation. */
+::view-transition-old(root),
 ::view-transition-new(root) {
-  animation: 180ms ease-out both palor-view-in;
+  animation: none;
 }
 
-@keyframes palor-fade-in {
+::view-transition-group(veda-view) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(veda-view) {
+  animation: 110ms ease-in both veda-view-out;
+}
+
+::view-transition-new(veda-view) {
+  animation: 200ms ease-out both veda-view-in;
+}
+
+@keyframes veda-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-@keyframes palor-rise-in {
+@keyframes veda-rise-in {
   from { opacity: 0; transform: translateY(6px) scale(0.995); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-@keyframes palor-content-in {
+@keyframes veda-content-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes palor-view-out {
+@keyframes veda-view-out {
   from { opacity: 1; }
-  to { opacity: 0.9; }
+  to { opacity: 0; }
 }
 
-@keyframes palor-view-in {
-  from { opacity: 0.88; }
-  to { opacity: 1; }
+@keyframes veda-view-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @media (prefers-reduced-motion: reduce) {

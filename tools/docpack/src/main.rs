@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use palor_core::DocsetId;
-use palor_docs::{DocPack, DocPackManifest, DocPage, DocSection, LicenseInfo};
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 use std::{
@@ -9,12 +7,14 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use veda_core::DocsetId;
+use veda_docs::{DocPack, DocPackManifest, DocPage, DocSection, LicenseInfo};
 use walkdir::WalkDir;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "palor-docpack",
-    about = "Build a deterministic offline Palor documentation pack"
+    name = "veda-docpack",
+    about = "Build a deterministic offline Veda documentation pack"
 )]
 struct Args {
     #[arg(long)]

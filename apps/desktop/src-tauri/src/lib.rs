@@ -24,11 +24,11 @@ pub fn run() {
             commands::list_downloads,
             commands::install_docset,
             commands::remove_docset,
-            commands::ask_palor,
+            commands::ask_veda,
             commands::read_source,
             commands::open_source,
             commands::reveal_data_folder,
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run Palor");
+        .expect("failed to run Veda");
 }

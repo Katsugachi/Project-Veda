@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    palor_desktop_lib::run();
+    veda_desktop_lib::run();
 }

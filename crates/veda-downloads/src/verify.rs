@@ -56,11 +56,11 @@ mod tests {
     async fn verifies_known_content() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("asset.bin");
-        tokio::fs::write(&file, b"palor").await.unwrap();
+        tokio::fs::write(&file, b"veda").await.unwrap();
         verify_file(
             &file,
-            5,
-            "039f23b88724002ebef0771882a0ef93f43e4a0d969bd4010d3416bb348f8af7",
+            4,
+            "6220b3e1f255f8e29b87488abab1bde126a6bbb44c62bf9b297b3d20347f8b4e",
         )
         .await
         .unwrap();

@@ -1,10 +1,10 @@
 [workspace]
 members = [
-  "crates/palor-core",
-  "crates/palor-downloads",
-  "crates/palor-search",
-  "crates/palor-runtime",
-  "crates/palor-docs",
+  "crates/veda-core",
+  "crates/veda-downloads",
+  "crates/veda-search",
+  "crates/veda-runtime",
+  "crates/veda-docs",
   "tools/docpack",
   "apps/desktop/src-tauri",
 ]
@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-authors = ["Palor contributors"]
+authors = ["Veda contributors"]
 rust-version = "1.82"
 
 [workspace.dependencies]

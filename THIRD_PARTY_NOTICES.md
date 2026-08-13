@@ -1,6 +1,6 @@
-# Palor third-party notices
+# Veda third-party notices
 
-Palor downloads optional third-party models, runtimes and documentation. They are not relicensed as Palor code.
+Veda downloads optional third-party models, runtimes and documentation. They are not relicensed as Veda code.
 
 ## MiniCPM5-1B and GGUF quantizations
 
@@ -35,7 +35,7 @@ Palor downloads optional third-party models, runtimes and documentation. They ar
 
 - Copyright cppreference.com contributors
 - Content is available under Creative Commons Attribution-ShareAlike 3.0 Unported and the GNU Free Documentation License, with the terms stated by cppreference.
-- Palor retains page URLs, source revision, attribution and source-offer metadata.
+- Veda retains page URLs, source revision, attribution and source-offer metadata.
 - https://en.cppreference.com/w/Cppreference:FAQ
 - https://en.cppreference.com/w/Cppreference:Copyright/CC-BY-SA
 
@@ -44,11 +44,11 @@ Palor downloads optional third-party models, runtimes and documentation. They ar
 - MDN content by Mozilla Contributors
 - Prose is available under Creative Commons Attribution-ShareAlike 2.5.
 - Code examples may have separate CC0 terms as described by MDN.
-- Palor retains each canonical MDN URL and the pinned source revision.
+- Veda retains each canonical MDN URL and the pinned source revision.
 - https://developer.mozilla.org/en-US/docs/MDN/Writing_guidelines/Attrib_copyright_license
 - https://github.com/mdn/content/blob/main/LICENSE.md
 
-## Palor mark
+## Veda mark
 
 The supplied SVG path is from Font Awesome Free 7.3.1.
 

@@ -1,9 +1,9 @@
 /// The planner runs before retrieval. Its only job is to turn the user's request
 /// into a compact, version-aware search plan. The JSON result is validated and
 /// bounded by Rust before any search is executed.
-pub const SEARCH_PLANNER_SYSTEM_PROMPT: &str = r#"You are Palor's offline search planner.
+pub const SEARCH_PLANNER_SYSTEM_PROMPT: &str = r#"You are Veda's offline search planner.
 
-Palor is a private documentation and code assistant running entirely on the user's device. Your current job is NOT to answer the question. Your job is to plan the searches that Palor's local hybrid retrieval engine must run.
+Veda is a private documentation and code assistant running entirely on the user's device. Your current job is NOT to answer the question. Your job is to plan the searches that Veda's local hybrid retrieval engine must run.
 
 Available documentation collections: python, cpp, html, css, javascript. The user may also attach source code.
 
@@ -22,7 +22,7 @@ Rules:
 
 /// The final answer prompt is deliberately explicit because the 1B model must
 /// know how retrieved evidence, attached code and citations are to be handled.
-pub const FINAL_ANSWER_SYSTEM_PROMPT: &str = r#"You are Palor, a precise offline documentation and code assistant powered by MiniCPM 5.
+pub const FINAL_ANSWER_SYSTEM_PROMPT: &str = r#"You are Veda, a precise offline documentation and code assistant powered by MiniCPM 5.
 
 You run locally. The user's prompts, chats, documents and source code are not sent to a cloud service.
 

@@ -1,5 +1,5 @@
 use crate::{DocChunk, DocPage};
-use palor_core::DocsetId;
+use veda_core::DocsetId;
 
 const TARGET_CHARS: usize = 5_200;
 const OVERLAP_CHARS: usize = 160;
