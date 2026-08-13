@@ -115,7 +115,7 @@ function renderSidebar(): string {
   const activeDownloads = state.downloads.filter((item) => item.state === "downloading" || item.state === "indexing").length;
   return `<aside class="sidebar">
     <div class="side-top">
-      <div class="wordmark">${logo()}<span class="wordmark-label">Veda</span></div>
+      <button class="wordmark" id="wordmark" title="${state.sidebarCollapsed ? "Expand sidebar" : "Veda"}" aria-label="${state.sidebarCollapsed ? "Expand sidebar" : "Veda"}">${logo()}<span class="wordmark-label">Veda</span></button>
       <button class="icon-button" id="collapseSidebar" title="Collapse sidebar" aria-label="Collapse sidebar">${icon("panel")}</button>
     </div>
     <nav class="primary-nav" aria-label="Primary">
@@ -156,29 +156,29 @@ function renderComposer(): string {
         <textarea id="composerInput" rows="1" placeholder="Ask your offline docs." ${state.busy ? "disabled" : ""}></textarea>
         <div class="composer-row">
           <div class="composer-left">
-            <button class="tool-button" id="attachButton" title="Attach code" aria-label="Attach code">${icon("paperclip")}</button>
+            <button class="tool-button" id="attachButton" title="Attach code" aria-label="Attach code" ${state.busy ? "disabled" : ""}>${icon("paperclip")}</button>
             <input id="fileInput" type="file" multiple hidden accept=".py,.pyi,.c,.h,.cc,.cpp,.cxx,.hpp,.html,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.json,.md,.txt" />
             <button class="scope-button" id="scopeButton" title="Choose documentation sources">${icon("layers")} ${installed || "No"} docsets</button>
           </div>
           <div class="composer-right">
-            <button class="model-button" id="modelButton" aria-expanded="${state.modelOpen}"><span class="mode-indicator"></span>MiniCPM 5 ${icon("chevron")}</button>
+            <button class="model-button" id="modelButton" aria-expanded="${state.modelOpen}" aria-haspopup="menu"><span class="mode-indicator"></span>MiniCPM 5 ${icon("chevron")}</button>
             <button class="send-button" id="sendButton" title="Send" aria-label="Send message" ${state.busy ? "disabled" : ""}>${state.busy ? icon("pause") : icon("arrowUp")}</button>
           </div>
         </div>
       </div>
+      ${state.modelOpen ? `<div class="popover-dismiss" id="popoverDismiss"></div><div class="popover${popoverEnter}" id="modelPopover" role="menu">${renderModelPopoverBody()}</div>` : ""}
     </div>
-    ${state.modelOpen ? `<div class="popover${popoverEnter}" id="modelPopover">${renderModelPopoverBody()}</div>` : ""}
   </div>`;
 }
 
 function renderModelPopoverBody(): string {
   return `
     <div class="popover-title">MiniCPM 5 mode</div>
-    <button class="popover-item${state.mode === "fast" ? " selected" : ""}" data-mode="fast">
-      ${icon("spark")}<span class="popover-item-copy">Fast<small>Direct answers · lower latency</small></span>${state.mode === "fast" ? icon("check") : ""}
+    <button class="popover-item${state.mode === "fast" ? " selected" : ""}" data-mode="fast" role="menuitem">
+      <span class="popover-item-copy">Fast<small>Direct answers · lower latency</small></span>
     </button>
-    <button class="popover-item${state.mode === "think" ? " selected" : ""}" data-mode="think">
-      ${icon("chip")}<span class="popover-item-copy">Think<small>Deeper reasoning · more tokens</small></span>${state.mode === "think" ? icon("check") : ""}
+    <button class="popover-item${state.mode === "think" ? " selected" : ""}" data-mode="think" role="menuitem">
+      <span class="popover-item-copy">Think<small>Deeper reasoning · more tokens</small></span>
     </button>`;
 }
 
@@ -334,7 +334,7 @@ function renderOnboarding(): string {
       : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Veda" : "Continue"}</button></div>`;
   return `<div class="modal-backdrop setup-backdrop${entering}"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
     <div class="onboarding-top"><div class="onboarding-brand">${logo()} Veda</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
-    <div class="onboarding-body" id="setupTitle">${renderOnboardingBody()}</div>
+    <div class="onboarding-body${entering}" id="setupTitle">${renderOnboardingBody()}</div>
     <div class="onboarding-bottom">${footer}</div>
   </section></div>`;
 }
@@ -348,8 +348,15 @@ function renderReader(): string {
   </section></div>`;
 }
 
+// Toasts animate only the first time each toast appears. Re-renders (setup
+// progress, downloads, theme changes) must not replay the entrance.
+let enteredToasts = 0;
 function renderToasts(): string {
-  return `<div class="toast-stack">${state.toasts.map((toast) => `<div class="toast"><span class="status-dot"></span>${toast}</div>`).join("")}</div>`;
+  const previous = enteredToasts;
+  enteredToasts = state.toasts.length;
+  return `<div class="toast-stack">${state.toasts
+    .map((toast, index) => `<div class="toast${index >= previous ? " enter" : ""}"><span class="status-dot"></span>${toast}</div>`)
+    .join("")}</div>`;
 }
 
 // Messages animate in the first time they appear. The set is consulted during
@@ -363,7 +370,9 @@ function messageEnterClass(id: string): string {
 
 // Modals and popovers only animate when they first open. Step changes,
 // progress updates and other re-renders must not replay the entrance.
-const modalEnterState: Record<string, boolean> = {};
+// The onboarding surface is part of the initial cold open, so when it starts
+// visible it is treated as already presented and does not animate.
+const modalEnterState: Record<string, boolean> = { onboarding: state.onboardingOpen };
 function enterClass(kind: string, open: boolean): string {
   const entering = open && !modalEnterState[kind];
   modalEnterState[kind] = open;
@@ -383,40 +392,39 @@ function contentEnterClass(): string {
 let composerDraft = "";
 let composerFocused = false;
 
+// Rendering is a synchronous, instant DOM swap. There are deliberately no
+// whole-page transitions: the View Transition API is avoided because it
+// crossfades the window on every navigation and throws when a second
+// transition starts while one is running (which silently ate clicks).
 function render(): void {
   const previous = document.querySelector<HTMLTextAreaElement>("#composerInput");
   composerFocused = Boolean(previous && previous === document.activeElement);
-  const view = state.view === "chat" ? renderChat() : state.view === "docs" ? renderDocs() : renderDownloads();
-  app.innerHTML = `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`;
-  bindEvents();
-  const composer = document.querySelector<HTMLTextAreaElement>("#composerInput");
-  if (composer) {
-    composer.value = composerDraft;
-    composer.style.height = "auto";
-    composer.style.height = `${Math.min(composer.scrollHeight, 190)}px`;
-    if (composerFocused) {
-      composer.focus();
-      composer.setSelectionRange(composer.value.length, composer.value.length);
-      composerFocused = false;
+  // The messages scroller is recreated by the DOM swap, so its position must
+  // be carried across re-renders; otherwise toggling the theme or opening a
+  // menu would snap the chat back to the top.
+  const previousScroller = document.querySelector<HTMLElement>("#messagesScroller");
+  const chatScrollTop = previousScroller?.scrollTop ?? 0;
+  try {
+    const view = state.view === "chat" ? renderChat() : state.view === "docs" ? renderDocs() : renderDownloads();
+    app.innerHTML = `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`;
+    bindEvents();
+    const composer = document.querySelector<HTMLTextAreaElement>("#composerInput");
+    if (composer) {
+      composer.value = composerDraft;
+      composer.style.height = "auto";
+      composer.style.height = `${Math.min(composer.scrollHeight, 190)}px`;
+      if (composerFocused) {
+        composer.focus();
+        composer.setSelectionRange(composer.value.length, composer.value.length);
+        composerFocused = false;
+      }
     }
-  }
-  if (state.messages.length) requestAnimationFrame(scrollMessages);
-}
-
-type TransitionDocument = Document & {
-  startViewTransition?: (update: () => void) => unknown;
-};
-
-// Only view navigation animates, and only the content area participates
-// (see `.view { view-transition-name: veda-view; }`). Every other state
-// change renders directly, so clicks never flash the whole window.
-function transitionRender(): void {
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const start = (document as TransitionDocument).startViewTransition;
-  if (!reducedMotion && start) {
-    start.call(document, () => render());
-  } else {
-    render();
+    const scroller = document.querySelector<HTMLElement>("#messagesScroller");
+    if (scroller) scroller.scrollTop = chatScrollTop;
+    if (state.messages.length) requestAnimationFrame(scrollIfNewContent);
+  } catch (error) {
+    // A rendering failure must never silently kill the app.
+    console.error("Veda render failed:", error);
   }
 }
 
@@ -451,16 +459,29 @@ function scrollMessages(): void {
   if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
+// Auto-scroll only follows new content (a message being added or the
+// assistant answer growing). Re-renders caused by theme toggles, menus or
+// downloads must not yank the user back to the bottom of the chat.
+let lastScrollSignal = "";
+function messageScrollSignal(): string {
+  const last = state.messages[state.messages.length - 1];
+  return `${state.messages.length}:${last?.content.length ?? 0}`;
+}
+function scrollIfNewContent(): void {
+  const signal = messageScrollSignal();
+  if (signal === lastScrollSignal) return;
+  lastScrollSignal = signal;
+  scrollMessages();
+}
+
 function setView(view: View): void {
   state.modelOpen = false;
   const changed = state.view !== view;
   state.view = view;
-  if (changed) {
-    animateContent = true;
-    transitionRender();
-  } else {
-    render();
-  }
+  // The docs grid animates when navigation actually enters it; clicking the
+  // already-active tab must not replay anything.
+  animateContent = changed && view === "docs";
+  render();
 }
 
 async function installDocsetBlocking(id: string): Promise<void> {
@@ -554,13 +575,15 @@ async function runSetup(): Promise<void> {
 
 async function addFiles(files: FileList): Promise<void> {
   const maxBytes = 512 * 1024;
+  let added = false;
   for (const file of Array.from(files).slice(0, 8)) {
     if (file.size > maxBytes) { toast(`${file.name} is larger than the 512 KB attachment limit.`); continue; }
     const content = await file.text();
     const language = file.name.split(".").pop()?.toLowerCase() ?? "text";
     state.attachments.push({ id: crypto.randomUUID(), name: file.name, bytes: file.size, language, content });
+    added = true;
   }
-  render();
+  if (added) render();
 }
 
 async function sendMessage(): Promise<void> {
@@ -593,6 +616,17 @@ async function sendMessage(): Promise<void> {
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view as View)));
   document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; enteredMessages.clear(); composerDraft = ""; setView("chat"); });
+  document.querySelector("#wordmark")?.addEventListener("click", () => {
+    if (!state.sidebarCollapsed) return;
+    state.sidebarCollapsed = false;
+    storageSet("veda:sidebar", "open");
+    document.querySelector(".app-shell")?.classList.remove("sidebar-collapsed");
+    const mark = document.querySelector<HTMLElement>("#wordmark");
+    if (mark) {
+      mark.title = "Veda";
+      mark.setAttribute("aria-label", "Veda");
+    }
+  });
   document.querySelector("#collapseSidebar")?.addEventListener("click", () => {
     state.sidebarCollapsed = !state.sidebarCollapsed;
     storageSet("veda:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
@@ -604,11 +638,18 @@ function bindEvents(): void {
   document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; render(); });
   document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; render(); } });
   document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; render(); });
+  document.querySelector("#popoverDismiss")?.addEventListener("click", () => { state.modelOpen = false; render(); });
   document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; render(); }));
   document.querySelector("#sendButton")?.addEventListener("click", () => void sendMessage());
   const input = document.querySelector<HTMLTextAreaElement>("#composerInput");
   input?.addEventListener("input", () => { composerDraft = input.value; input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; });
-  input?.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } });
+  input?.addEventListener("keydown", (event) => {
+    // Ignore Enter while an IME is composing (CJK input), and ignore
+    // repeats so a held key can't fire the request twice.
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.repeat) return;
+    event.preventDefault();
+    void sendMessage();
+  });
   document.querySelector("#attachButton")?.addEventListener("click", () => document.querySelector<HTMLInputElement>("#fileInput")?.click());
   document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", (event) => { const files = (event.currentTarget as HTMLInputElement).files; if (files) void addFiles(files); });
   document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); render(); }));
@@ -650,6 +691,15 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; render(); }));
   document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); render(); }));
 }
+
+// Escape closes transient surfaces (mode menu, source reader, settings).
+// The onboarding flow intentionally stays open until setup completes.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (state.modelOpen) { state.modelOpen = false; render(); return; }
+  if (state.reader) { state.reader = undefined; render(); return; }
+  if (state.settingsOpen) { state.settingsOpen = false; render(); }
+});
 
 async function init(): Promise<void> {
   render();
