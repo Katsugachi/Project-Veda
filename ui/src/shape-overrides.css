@@ -108,7 +108,7 @@ body,
   animation: veda-rise-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.onboarding-body > * {
+.onboarding-body.entering > * {
   animation: veda-content-in 180ms ease-out both;
 }
 
@@ -122,27 +122,6 @@ body,
 
 .doc-grid.enter > *:nth-child(3) {
   animation-delay: 40ms;
-}
-
-/* View navigation crossfades only the `.view` content area (it carries
-   `view-transition-name: veda-view`). The root element must not participate,
-   otherwise the whole window would flash on every navigation. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation: none;
-}
-
-::view-transition-group(veda-view) {
-  animation-duration: 220ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-::view-transition-old(veda-view) {
-  animation: 110ms ease-in both veda-view-out;
-}
-
-::view-transition-new(veda-view) {
-  animation: 200ms ease-out both veda-view-in;
 }
 
 @keyframes veda-fade-in {
@@ -160,16 +139,6 @@ body,
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes veda-view-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
-}
-
-@keyframes veda-view-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -178,11 +147,6 @@ body,
     animation-duration: 0.01ms !important;
     animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
-  }
-
-  ::view-transition-old(root),
-  ::view-transition-new(root) {
-    animation: none !important;
   }
 }
 
