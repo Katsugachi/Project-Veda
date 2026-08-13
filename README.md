@@ -1,5 +1,5 @@
 # Veda
-
+[![Unsigned desktop release](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml/badge.svg)](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml)
 Veda is a Rust-first, local-only desktop assistant for Python, C++, HTML, CSS, JavaScript and attached source code. It runs **MiniCPM 5** through a pinned native `llama.cpp` runtime, asks the model to plan documentation searches, fuses BM25 and semantic results, and answers with local source citations.
 
 No prompt, chat, documentation page, embedding or attached file is sent to a model API.
