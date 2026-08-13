@@ -12,8 +12,9 @@
 .vscode/
 *.swp
 
-# Local Palor state
+# Local Veda state
 /.palor/
+/.veda/
 *.part
 *.log
 

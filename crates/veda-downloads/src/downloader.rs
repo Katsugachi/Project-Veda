@@ -36,7 +36,7 @@ pub struct Downloader {
 impl Downloader {
     pub fn new() -> Result<Self, DownloadError> {
         let client = Client::builder()
-            .user_agent("Veda/0.1 (+https://github.com/Katsugachi/Project-Palor)")
+            .user_agent("Veda/0.1 (+https://github.com/Katsugachi/Project-Veda)")
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(60 * 60))
             .redirect(reqwest::redirect::Policy::limited(8))
