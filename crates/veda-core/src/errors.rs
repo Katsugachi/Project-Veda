@@ -42,10 +42,7 @@ pub fn friendly_error(message: &str) -> String {
     }
 
     // Strip trailing "(os error N)" chunks, which Rust appends to IO errors.
-    loop {
-        let Some(index) = text.rfind("(os error") else {
-            break;
-        };
+    while let Some(index) = text.rfind("(os error") {
         text.truncate(index);
         text = text
             .trim_end_matches([' ', ':', ';', ',', '.', '(', '-'])

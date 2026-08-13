@@ -52,13 +52,14 @@ impl LogTail {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let lines = text
+        let mut lines = text
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .rev()
-            .take(6)
             .collect::<Vec<_>>();
-        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+        if lines.len() > 6 {
+            lines.drain(..lines.len() - 6);
+        }
+        lines.join("\n")
     }
 }
 
