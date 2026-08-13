@@ -24,7 +24,7 @@ jobs:
       - run: npm run tauri build -- --target universal-apple-darwin --bundles dmg --no-sign
       - uses: actions/upload-artifact@v6
         with:
-          name: Palor-macOS-universal-DMG
+          name: Veda-macOS-universal-DMG
           path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
   windows-x64:
@@ -42,7 +42,7 @@ jobs:
       - run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis --no-sign
       - uses: actions/upload-artifact@v6
         with:
-          name: Palor-Windows-x64-Setup
+          name: Veda-Windows-x64-Setup
           path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
 
   windows-arm64:
@@ -62,7 +62,7 @@ jobs:
       - run: npm run tauri build -- --target aarch64-pc-windows-msvc --bundles nsis --no-sign
       - uses: actions/upload-artifact@v6
         with:
-          name: Palor-Windows-ARM64-Setup
+          name: Veda-Windows-ARM64-Setup
           path: target/aarch64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
 
   publish:
