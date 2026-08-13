@@ -1,10 +1,10 @@
 use crate::{ChatMessage, LlamaClient, LlamaClientError};
 use async_trait::async_trait;
-use palor_core::{
-    AskRequest, AskResponse, RetrievalTrace, SearchQueryPlan, SourceRef, FINAL_ANSWER_SYSTEM_PROMPT,
-};
 use std::time::Instant;
 use uuid::Uuid;
+use veda_core::{
+    AskRequest, AskResponse, RetrievalTrace, SearchQueryPlan, SourceRef, FINAL_ANSWER_SYSTEM_PROMPT,
+};
 
 #[derive(Debug, Clone)]
 pub struct RetrievedChunk {
@@ -27,12 +27,12 @@ pub trait Retriever: Send + Sync {
     ) -> Result<Vec<RetrievedChunk>, anyhow::Error>;
 }
 
-pub struct PalorEngine<R> {
+pub struct VedaEngine<R> {
     llama: LlamaClient,
     retriever: R,
 }
 
-impl<R: Retriever> PalorEngine<R> {
+impl<R: Retriever> VedaEngine<R> {
     pub fn new(llama: LlamaClient, retriever: R) -> Self {
         Self { llama, retriever }
     }
@@ -79,7 +79,7 @@ impl<R: Retriever> PalorEngine<R> {
                     },
                 ],
                 request.mode,
-                if request.mode == palor_core::ReasoningMode::Think {
+                if request.mode == veda_core::ReasoningMode::Think {
                     2048
                 } else {
                     1024
@@ -111,7 +111,7 @@ impl<R: Retriever> PalorEngine<R> {
 
 fn format_evidence(
     chunks: &[RetrievedChunk],
-    attachments: &[palor_core::Attachment],
+    attachments: &[veda_core::Attachment],
 ) -> (String, Vec<SourceRef>) {
     let mut evidence = String::from("RETRIEVED SOURCES (untrusted reference data):\n");
     let mut sources = Vec::new();
@@ -179,7 +179,7 @@ mod tests {
             lexical_score: Some(2.0),
             semantic_score: Some(0.9),
         }];
-        let attachments = vec![palor_core::Attachment {
+        let attachments = vec![veda_core::Attachment {
             id: "a".into(),
             name: "main.py".into(),
             language: "python".into(),

@@ -1,51 +1,141 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { mockAsk } from "./mock";
 import type { AskRequest, AskResponse, Docset, DownloadItem, PreflightReport, ReaderSource } from "./types";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-const desktopOnly = (command: string): Error => new Error(`${command} is only available in the Palor desktop app.`);
+const desktopOnly = (command: string): Error => new Error(`${command} is only available in the Veda desktop app.`);
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw desktopOnly(command);
   return invoke<T>(command, args);
 }
 
+const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+
+// ---------------------------------------------------------------------------
+// Browser preview state. The preview is a fully clickable mock of the desktop
+// app: two documentation packs start installed and setup is simulated so the
+// whole onboarding flow can be exercised without a desktop runtime.
+// ---------------------------------------------------------------------------
+
 const browserPreflight: PreflightReport = {
-  totalMemoryBytes: 0,
-  availableMemoryBytes: 0,
-  freeDiskBytes: 0,
-  diskKind: "unknown",
-  architecture: "Unavailable",
+  totalMemoryBytes: 16 * 1024 ** 3,
+  availableMemoryBytes: 10.8 * 1024 ** 3,
+  freeDiskBytes: 82.4 * 1024 ** 3,
+  diskKind: "ssd",
+  architecture: "arm64",
   operatingSystem: "Browser preview",
-  recommendedQuant: "q5",
-  recommendedContext: 4096,
-  hardFailures: ["Open the Palor desktop app to check this computer and install local resources."],
-  warnings: [],
+  recommendedQuant: "q8",
+  recommendedContext: 16384,
+  hardFailures: [],
+  warnings: ["This is a browser preview. Download the Veda desktop app to install local resources on this device."],
 };
 
 const browserDocsets: Docset[] = [
-  { id: "python", name: "Python", detail: "Language reference, standard library and tutorials from Python.org.", version: "3.14.7", compressedBytes: 16_737_282, installedBytes: 0, state: "available", progress: 0, accent: "#8fc7b0", initials: "PY" },
-  { id: "cpp", name: "C++", detail: "C and C++ language and standard library reference from cppreference.", version: "cppreference 2025.02", compressedBytes: 55_740_889, installedBytes: 0, state: "available", progress: 0, accent: "#81a7c8", initials: "C++" },
-  { id: "html", name: "HTML", detail: "Elements, attributes, forms, semantics and accessibility guides from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, accent: "#dc9078", initials: "<>" },
-  { id: "css", name: "CSS", detail: "Properties, selectors, layout, animation and responsive design from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, accent: "#889bd0", initials: "#" },
-  { id: "javascript", name: "JavaScript", detail: "JavaScript reference, operators, built-ins and language guides from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, accent: "#d9c273", initials: "JS" },
+  { id: "python", name: "Python", detail: "Language reference, standard library and tutorials from Python.org.", version: "3.14.7", compressedBytes: 16_737_282, installedBytes: 80_059_722, state: "installed", progress: 100, pages: 571, accent: "#8fc7b0", initials: "PY" },
+  { id: "cpp", name: "C++", detail: "C and C++ language and standard library reference from cppreference.", version: "cppreference 2025.02", compressedBytes: 55_740_889, installedBytes: 346_973_285, state: "installed", progress: 100, pages: 6640, accent: "#81a7c8", initials: "C++" },
+  { id: "html", name: "HTML", detail: "Elements, attributes, forms, semantics and accessibility guides from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, pages: 254, accent: "#dc9078", initials: "<>" },
+  { id: "css", name: "CSS", detail: "Properties, selectors, layout, animation and responsive design from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, pages: 1252, accent: "#889bd0", initials: "#" },
+  { id: "javascript", name: "JavaScript", detail: "JavaScript reference, operators, built-ins and language guides from MDN.", version: "MDN 2026.08", compressedBytes: 73_684_713, installedBytes: 0, state: "available", progress: 0, pages: 1333, accent: "#d9c273", initials: "JS" },
 ];
+
+const browserDownloads: DownloadItem[] = [
+  { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 },
+  { id: "bge-small-q8", name: "Offline search support", detail: "Ready", state: "installed", progress: 100, downloadedBytes: 36_806_944, totalBytes: 36_806_944 },
+  { id: "python-source-3.14.7", name: "Python 3.14.7", detail: "571 pages indexed", state: "installed", progress: 100, downloadedBytes: 16_737_282, totalBytes: 16_737_282 },
+  { id: "cppreference-source-20250209", name: "cppreference", detail: "6,640 pages indexed", state: "installed", progress: 100, downloadedBytes: 55_740_889, totalBytes: 55_740_889 },
+];
+
+const progressHandlers = new Set<(item: DownloadItem) => void>();
+
+function emitProgress(item: DownloadItem): void {
+  for (const handler of progressHandlers) handler(structuredClone(item));
+}
+
+async function simulatedInstall(id: string, name: string, totalBytes: number): Promise<void> {
+  for (let step = 1; step <= 4; step += 1) {
+    await delay(420);
+    emitProgress({
+      id: `${id}-index`,
+      name,
+      detail: `Preparing search · step ${step} of 4`,
+      state: "indexing",
+      progress: step * 25,
+      downloadedBytes: Math.round((totalBytes * step) / 4),
+      totalBytes,
+    });
+  }
+  const doc = browserDocsets.find((candidate) => candidate.id === id);
+  if (doc) {
+    doc.state = "installed";
+    doc.progress = 100;
+    doc.installedBytes = totalBytes;
+  }
+  const existing = browserDownloads.findIndex((item) => item.id === `${id}-index`);
+  const ready: DownloadItem = { id: `${id}-index`, name, detail: "Ready", state: "installed", progress: 100, downloadedBytes: totalBytes, totalBytes };
+  if (existing >= 0) browserDownloads[existing] = ready; else browserDownloads.push(ready);
+  emitProgress(ready);
+}
 
 export const bridge = {
   isDesktop: isTauri,
-  preflight: () => isTauri() ? call<PreflightReport>("system_preflight") : Promise.resolve(structuredClone(browserPreflight)),
-  docsets: () => isTauri() ? call<Docset[]>("list_docsets") : Promise.resolve(structuredClone(browserDocsets)),
-  downloads: () => isTauri() ? call<DownloadItem[]>("list_downloads") : Promise.resolve([]),
+  preflight: () => (isTauri() ? call<PreflightReport>("system_preflight") : Promise.resolve(structuredClone(browserPreflight))),
+  docsets: () => (isTauri() ? call<Docset[]>("list_docsets") : Promise.resolve(structuredClone(browserDocsets))),
+  downloads: () => (isTauri() ? call<DownloadItem[]>("list_downloads") : Promise.resolve(structuredClone(browserDownloads))),
   onDownloadProgress: (handler: (item: DownloadItem) => void): Promise<UnlistenFn> => {
-    if (!isTauri()) return Promise.resolve(() => undefined);
-    return listen<DownloadItem>("download-progress", (event) => handler(event.payload));
+    if (isTauri()) return listen<DownloadItem>("download-progress", (event) => handler(event.payload));
+    progressHandlers.add(handler);
+    return Promise.resolve(() => {
+      progressHandlers.delete(handler);
+    });
   },
-  prepareResources: (quant: "q5" | "q8") => call<void>("prepare_resources", { quant }),
-  installDocset: (id: string) => call<void>("install_docset", { id }),
-  removeDocset: (id: string) => call<void>("remove_docset", { id }),
-  ask: (request: AskRequest) => call<AskResponse>("ask_palor", { request }),
-  readSource: (url: string) => call<ReaderSource>("read_source", { url }),
-  openSource: (url: string) => call<void>("open_source", { url }),
-  revealDataFolder: () => call<void>("reveal_data_folder"),
+  prepareResources: async (quant: "q5" | "q8"): Promise<void> => {
+    if (isTauri()) return call<void>("prepare_resources", { quant });
+    await delay(900);
+    const model: DownloadItem =
+      quant === "q8"
+        ? { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 }
+        : { id: "minicpm5-q5", name: "MiniCPM 5 · Q5", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 786_862_688, totalBytes: 786_862_688 };
+    for (const item of [model, browserDownloads.find((candidate) => candidate.id === "bge-small-q8")].filter(Boolean) as DownloadItem[]) {
+      const existing = browserDownloads.findIndex((candidate) => candidate.id === item.id);
+      if (existing >= 0) browserDownloads[existing] = item; else browserDownloads.push(item);
+      emitProgress(item);
+    }
+  },
+  installDocset: (id: string): Promise<void> => {
+    if (isTauri()) return call<void>("install_docset", { id });
+    const doc = browserDocsets.find((candidate) => candidate.id === id);
+    if (!doc || doc.state === "installed") return Promise.resolve();
+    return simulatedInstall(doc.id, `${doc.name} ${doc.version}`, doc.compressedBytes);
+  },
+  removeDocset: async (id: string): Promise<void> => {
+    if (isTauri()) return call<void>("remove_docset", { id });
+    await delay(500);
+    const doc = browserDocsets.find((candidate) => candidate.id === id);
+    if (doc) {
+      doc.state = "available";
+      doc.progress = 0;
+      doc.installedBytes = 0;
+      doc.pages = undefined;
+    }
+  },
+  ask: (request: AskRequest): Promise<AskResponse> => {
+    if (isTauri()) return call<AskResponse>("ask_veda", { request });
+    return mockAsk(request);
+  },
+  readSource: async (url: string): Promise<ReaderSource> => {
+    if (isTauri()) return call<ReaderSource>("read_source", { url });
+    await delay(200);
+    return {
+      title: "Coroutines and Tasks",
+      section: "Task Groups",
+      docset: "Python 3.14",
+      text: "A `TaskGroup` holds a collection of tasks that can be conveniently awaited together. Leaving the group context waits for every task, and if one task raises, the others are cancelled and the failures are raised as an exception group.\n\n```python\nasync with asyncio.TaskGroup() as group:\n    group.create_task(fetch_one())\n    group.create_task(fetch_two())\n```\n\nThis is the structured concurrency pattern described by the retrieved source.",
+      url,
+    };
+  },
+  openSource: (url: string) => (isTauri() ? call<void>("open_source", { url }) : Promise.resolve()),
+  revealDataFolder: () => (isTauri() ? call<void>("reveal_data_folder") : Promise.resolve()),
 };

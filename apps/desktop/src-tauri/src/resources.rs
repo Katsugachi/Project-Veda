@@ -1,8 +1,5 @@
 use crate::{commands::DownloadItem, state::AppState};
 use flate2::read::GzDecoder;
-use palor_core::{default_catalog, Asset, AssetKind, ModelQuant};
-use palor_downloads::{DownloadProgress, DownloadSpec, Downloader};
-use palor_runtime::{LlamaSidecar, SidecarConfig};
 use serde::Serialize;
 use std::{
     fs::File,
@@ -12,6 +9,9 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::watch;
+use veda_core::{contextual_error, default_catalog, Asset, AssetKind, ModelQuant};
+use veda_downloads::{DownloadError, DownloadProgress, DownloadSpec, Downloader};
+use veda_runtime::{LlamaSidecar, SidecarConfig};
 
 pub async fn prepare(app: AppHandle, state: &AppState, quant: ModelQuant) -> Result<(), String> {
     enforce_resources(quant, &state.data_dir)?;
@@ -71,7 +71,7 @@ async fn install_and_probe_runtime(
     let runtime_dir = state.data_dir.join("runtime").join(&runtime.id);
     extract_runtime(&archives, &runtime_dir)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("Could not unpack the downloaded runtime", &error))?;
     for archive in archives {
         let _ = tokio::fs::remove_file(archive).await;
     }
@@ -81,7 +81,7 @@ async fn install_and_probe_runtime(
         "llama-server"
     };
     let executable = find_file(&runtime_dir, executable_name)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| contextual_error("Could not inspect the downloaded runtime", &error))?
         .ok_or_else(|| format!("{executable_name} was not found in the downloaded runtime"))?;
     let accelerated = runtime.backend.as_deref() != Some("cpu");
     let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
@@ -95,8 +95,11 @@ async fn install_and_probe_runtime(
         threads,
     })
     .await
-    .map_err(|error| error.to_string())?;
-    sidecar.stop().await.map_err(|error| error.to_string())?;
+    .map_err(|error| contextual_error("Could not start the llama.cpp runtime", &error))?;
+    sidecar
+        .stop()
+        .await
+        .map_err(|error| contextual_error("Could not stop the llama.cpp runtime", &error))?;
     Ok(ActiveRuntime {
         asset_id: runtime.id.clone(),
         backend: runtime.backend.clone().unwrap_or_else(|| "cpu".into()),
@@ -113,21 +116,22 @@ struct ActiveRuntime {
 }
 
 async fn write_active_runtime(state: &AppState, runtime: ActiveRuntime) -> Result<(), String> {
-    let content = serde_json::to_vec_pretty(&runtime).map_err(|error| error.to_string())?;
+    let content = serde_json::to_vec_pretty(&runtime)
+        .map_err(|error| contextual_error("Could not record the active runtime", &error))?;
     let destination = state.data_dir.join("runtime").join("active.json");
     let temporary = destination.with_extension("json.part");
     tokio::fs::write(&temporary, content)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("Could not record the active runtime", &error))?;
     tokio::fs::rename(temporary, destination)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| contextual_error("Could not record the active runtime", &error))
 }
 
 pub async fn install_docset(
     app: AppHandle,
     state: &AppState,
-    id: palor_core::DocsetId,
+    id: veda_core::DocsetId,
 ) -> Result<(), String> {
     let source = default_catalog()
         .assets
@@ -145,7 +149,7 @@ pub async fn install_docset(
         let installed_version = tokio::fs::read(&manifest_path)
             .await
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<palor_docs::DocPackManifest>(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<veda_docs::DocPackManifest>(&bytes).ok())
             .map(|manifest| manifest.version);
         if installed_version.as_deref() == Some(version) {
             return Ok(());
@@ -158,7 +162,7 @@ pub async fn install_docset(
         .join(format!(".{}-source", id.as_str()));
     extract_runtime(&[archive], &source_root)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("Could not unpack the documentation source", &error))?;
     let input = source_root.join(
         source
             .source_subdir
@@ -168,12 +172,12 @@ pub async fn install_docset(
     let input_for_worker = input.clone();
     let canonical_for_worker = canonical_base.to_string();
     let pages = tokio::task::spawn_blocking(move || {
-        palor_docs::ingest_directory(&input_for_worker, &canonical_for_worker)
+        veda_docs::ingest_directory(&input_for_worker, &canonical_for_worker)
     })
     .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
-    let manifest = palor_docs::DocPackManifest {
+    .map_err(|error| contextual_error("The import stopped unexpectedly", &error))?
+    .map_err(|error| contextual_error("Could not read the documentation source", &error))?;
+    let manifest = veda_docs::DocPackManifest {
         schema_version: 1,
         id,
         name: docset_name(id).into(),
@@ -183,7 +187,7 @@ pub async fn install_docset(
         created_at: "2026-08-12T00:00:00Z".into(),
         locale: "en".into(),
         page_count: pages.len(),
-        license: palor_docs::LicenseInfo {
+        license: veda_docs::LicenseInfo {
             name: source.license.clone(),
             url: license_url.into(),
             attribution: attribution.into(),
@@ -192,9 +196,9 @@ pub async fn install_docset(
     };
     tokio::fs::create_dir_all(&install_dir)
         .await
-        .map_err(|error| error.to_string())?;
-    let pack_path = install_dir.join("content.palordoc");
-    let pack = palor_docs::DocPack {
+        .map_err(|error| contextual_error("Could not prepare the documentation folder", &error))?;
+    let pack_path = install_dir.join("content.vedadoc");
+    let pack = veda_docs::DocPack {
         manifest: manifest.clone(),
         pages,
     };
@@ -202,21 +206,20 @@ pub async fn install_docset(
     let path_for_worker = pack_path.clone();
     tokio::task::spawn_blocking(move || pack_for_worker.write(&path_for_worker))
         .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("The documentation import stopped unexpectedly", &error))?
+        .map_err(|error| contextual_error("Could not write the documentation pack", &error))?;
     index_docset(&app, state, &pack).await?;
-    tokio::fs::write(
-        install_dir.join("manifest.json"),
-        serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let manifest_json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| contextual_error("Could not save the documentation manifest", &error))?;
+    tokio::fs::write(install_dir.join("manifest.json"), manifest_json)
+        .await
+        .map_err(|error| contextual_error("Could not save the documentation manifest", &error))?;
     *state.search_index.write() = None;
     let _ = tokio::fs::remove_dir_all(source_root).await;
     Ok(())
 }
 
-pub async fn remove_docset(state: &AppState, id: palor_core::DocsetId) -> Result<(), String> {
+pub async fn remove_docset(state: &AppState, id: veda_core::DocsetId) -> Result<(), String> {
     let install_dir = state.data_dir.join("docsets").join(id.as_str());
     let source_dir = state
         .data_dir
@@ -229,17 +232,26 @@ pub async fn remove_docset(state: &AppState, id: palor_core::DocsetId) -> Result
 
     if let Err(error) = tokio::fs::remove_dir_all(&install_dir).await {
         if error.kind() != io::ErrorKind::NotFound {
-            return Err(error.to_string());
+            return Err(contextual_error(
+                "Could not remove the documentation pack",
+                &error,
+            ));
         }
     }
     if let Err(error) = tokio::fs::remove_dir_all(source_dir).await {
         if error.kind() != io::ErrorKind::NotFound {
-            return Err(error.to_string());
+            return Err(contextual_error(
+                "Could not remove the documentation pack",
+                &error,
+            ));
         }
     }
     if let Err(error) = tokio::fs::remove_file(index_path).await {
         if error.kind() != io::ErrorKind::NotFound {
-            return Err(error.to_string());
+            return Err(contextual_error(
+                "Could not remove the search index",
+                &error,
+            ));
         }
     }
 
@@ -265,7 +277,7 @@ pub async fn remove_docset(state: &AppState, id: palor_core::DocsetId) -> Result
 async fn index_docset(
     app: &AppHandle,
     state: &AppState,
-    pack: &palor_docs::DocPack,
+    pack: &veda_docs::DocPack,
 ) -> Result<(), String> {
     let active: ActiveRuntime = serde_json::from_slice(
         &tokio::fs::read(state.data_dir.join("runtime").join("active.json"))
@@ -274,7 +286,7 @@ async fn index_docset(
                 "MiniCPM resources must be prepared before documentation indexing".to_string()
             })?,
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| contextual_error("The active runtime record is unreadable", &error))?;
     let embedding_model = state
         .data_dir
         .join("models")
@@ -291,13 +303,13 @@ async fn index_docset(
         threads,
     })
     .await
-    .map_err(|error| error.to_string())?;
-    let client = palor_runtime::EmbeddingClient::new(&sidecar.base_url, &sidecar.api_key)
-        .map_err(|error| error.to_string())?;
+    .map_err(|error| contextual_error("Could not start search preparation", &error))?;
+    let client = veda_runtime::EmbeddingClient::new(&sidecar.base_url, &sidecar.api_key)
+        .map_err(|error| contextual_error("Could not start search preparation", &error))?;
     let chunks = pack
         .pages
         .iter()
-        .flat_map(|page| palor_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
+        .flat_map(|page| veda_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
         .collect::<Vec<_>>();
     let id = pack.manifest.id.as_str().to_string();
     let item_name = pack.manifest.name.clone();
@@ -309,9 +321,9 @@ async fn index_docset(
             .iter()
             .map(|chunk| {
                 let complete = format!("{}\n{}\n{}", chunk.title, chunk.section, chunk.text);
-                palor_runtime::bounded_embedding_input(
+                veda_runtime::bounded_embedding_input(
                     &complete,
-                    palor_runtime::MAX_EMBEDDING_INPUT_BYTES,
+                    veda_runtime::MAX_EMBEDDING_INPUT_BYTES,
                 )
             })
             .collect::<Vec<_>>();
@@ -321,9 +333,7 @@ async fn index_docset(
                 tracing::warn!(%batch_error, "embedding batch failed; retrying one section at a time");
                 let mut recovered = Vec::with_capacity(inputs.len());
                 for input in &inputs {
-                    recovered.push(
-                        embed_one_with_backoff(&client, input, &batch_error.to_string()).await?,
-                    );
+                    recovered.push(embed_one_with_backoff(&client, input).await?);
                 }
                 recovered
             }
@@ -333,14 +343,14 @@ async fn index_docset(
             return Err("search preparation returned an unexpected result".into());
         }
         for (chunk, embedding) in batch.iter().zip(embeddings) {
-            indexed.push(palor_search::SearchChunk {
+            indexed.push(veda_search::SearchChunk {
                 id: chunk.id.clone(),
                 docset: chunk.docset,
                 version: chunk.version.clone(),
                 title: chunk.title.clone(),
                 section: chunk.section.clone(),
                 url: format!(
-                    "palor://docs/{}/{}#{}",
+                    "veda://docs/{}/{}#{}",
                     chunk.docset.as_str(),
                     chunk.page_path,
                     chunk.anchor
@@ -367,19 +377,25 @@ async fn index_docset(
             last_progress = Instant::now();
         }
     }
-    sidecar.stop().await.map_err(|error| error.to_string())?;
+    sidecar
+        .stop()
+        .await
+        .map_err(|error| contextual_error("Could not stop search preparation", &error))?;
     let index_dir = state.data_dir.join("indexes");
     tokio::fs::create_dir_all(&index_dir)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("Could not prepare the search index folder", &error))?;
     let destination = index_dir.join(format!("{id}.json.zst"));
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let file = File::create(&destination).map_err(|error| error.to_string())?;
-        let encoder = zstd::Encoder::new(file, 8).map_err(|error| error.to_string())?;
-        serde_json::to_writer(encoder.auto_finish(), &indexed).map_err(|error| error.to_string())
+        let file = File::create(&destination)
+            .map_err(|error| contextual_error("Could not write the search index", &error))?;
+        let encoder = zstd::Encoder::new(file, 8)
+            .map_err(|error| contextual_error("Could not write the search index", &error))?;
+        serde_json::to_writer(encoder.auto_finish(), &indexed)
+            .map_err(|error| contextual_error("Could not write the search index", &error))
     })
     .await
-    .map_err(|error| error.to_string())??;
+    .map_err(|error| contextual_error("The search import stopped unexpectedly", &error))??;
     let installed = DownloadItem {
         id: format!("{id}-index"),
         name: item_name,
@@ -402,13 +418,12 @@ fn next_embedding_retry_limit(current: usize) -> usize {
 }
 
 async fn embed_one_with_backoff(
-    client: &palor_runtime::EmbeddingClient,
+    client: &veda_runtime::EmbeddingClient,
     input: &str,
-    batch_error: &str,
 ) -> Result<Vec<f32>, String> {
     let mut max_bytes = input.len();
     loop {
-        let candidate = palor_runtime::bounded_embedding_input(input, max_bytes);
+        let candidate = veda_runtime::bounded_embedding_input(input, max_bytes);
         match client.embed_passages(&[candidate]).await {
             Ok(mut embeddings) if embeddings.len() == 1 => return Ok(embeddings.remove(0)),
             Ok(_) => return Err("Search preparation returned an unexpected result.".into()),
@@ -419,63 +434,64 @@ async fn embed_one_with_backoff(
             }
             Err(error) => {
                 return Err(format!(
-                    "Could not prepare search for this documentation. {error}; initial batch error: {batch_error}"
+                    "Could not prepare search for this documentation. {}",
+                    contextual_error("a section could not be analyzed", &error)
                 ));
             }
         }
     }
 }
 
-fn docset_name(id: palor_core::DocsetId) -> &'static str {
+fn docset_name(id: veda_core::DocsetId) -> &'static str {
     match id {
-        palor_core::DocsetId::Python => "Python",
-        palor_core::DocsetId::Cpp => "C++",
-        palor_core::DocsetId::Html => "HTML",
-        palor_core::DocsetId::Css => "CSS",
-        palor_core::DocsetId::Javascript => "JavaScript",
+        veda_core::DocsetId::Python => "Python",
+        veda_core::DocsetId::Cpp => "C++",
+        veda_core::DocsetId::Html => "HTML",
+        veda_core::DocsetId::Css => "CSS",
+        veda_core::DocsetId::Javascript => "JavaScript",
     }
 }
 pub(crate) fn expected_docset_version(id: &str) -> Option<&'static str> {
     let id = match id {
-        "python" => palor_core::DocsetId::Python,
-        "cpp" => palor_core::DocsetId::Cpp,
-        "html" => palor_core::DocsetId::Html,
-        "css" => palor_core::DocsetId::Css,
-        "javascript" => palor_core::DocsetId::Javascript,
+        "python" => veda_core::DocsetId::Python,
+        "cpp" => veda_core::DocsetId::Cpp,
+        "html" => veda_core::DocsetId::Html,
+        "css" => veda_core::DocsetId::Css,
+        "javascript" => veda_core::DocsetId::Javascript,
         _ => return None,
     };
     Some(docset_metadata(id).0)
 }
 
 fn docset_metadata(
-    id: palor_core::DocsetId,
+    id: veda_core::DocsetId,
 ) -> (&'static str, &'static str, &'static str, &'static str) {
     match id {
-        palor_core::DocsetId::Python => (
+        veda_core::DocsetId::Python => (
             "3.14.7",
             "https://docs.python.org/3",
             "https://docs.python.org/3/license.html",
             "© Python Software Foundation",
         ),
-        palor_core::DocsetId::Cpp => (
+        veda_core::DocsetId::Cpp => (
             "2025-02-09",
             "https://en.cppreference.com/w",
             "https://en.cppreference.com/w/Cppreference:Copyright/CC-BY-SA",
             "cppreference.com contributors",
         ),
-        palor_core::DocsetId::Html => (
+        veda_core::DocsetId::Html => (
             "2026-08-12",
             "https://developer.mozilla.org/en-US/docs",
             "https://creativecommons.org/licenses/by-sa/2.5/",
             "MDN content by Mozilla Contributors",
         ),
-        palor_core::DocsetId::Css => (
+        veda_core::DocsetId::Css => (
             "2026-08-12",
             "https://developer.mozilla.org/en-US/docs",
             "https://creativecommons.org/licenses/by-sa/2.5/",
             "MDN content by Mozilla Contributors",
         ),
-        palor_core::DocsetId::Javascript => (
+        veda_core::DocsetId::Javascript => (
             "2026-08-12",
             "https://developer.mozilla.org/en-US/docs",
             "https://creativecommons.org/licenses/by-sa/2.5/",
@@ -504,8 +520,8 @@ fn enforce_resources(quant: ModelQuant, data_dir: &Path) -> Result<(), String> {
         .max_by_key(|disk| disk.mount_point().as_os_str().len())
         .or_else(|| disks.iter().max_by_key(|disk| disk.available_space()))
         .map_or(0, |disk| disk.available_space());
-    if free < palor_core::preflight::MINIMUM_FREE_DISK_BYTES {
-        return Err("Palor requires at least 10 GiB free on its data drive before setup.".into());
+    if free < veda_core::preflight::MINIMUM_FREE_DISK_BYTES {
+        return Err("Veda requires at least 10 GiB free on its data drive before setup.".into());
     }
     Ok(())
 }
@@ -577,7 +593,7 @@ async fn download_asset(
 ) -> Result<PathBuf, String> {
     tokio::fs::create_dir_all(&directory)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| contextual_error("Could not prepare the download folder", &error))?;
     let filename = asset
         .url
         .rsplit('/')
@@ -585,7 +601,7 @@ async fn download_asset(
         .ok_or("asset URL has no filename")?;
     let destination = directory.join(filename);
     if destination.exists()
-        && palor_downloads::verify_file(&destination, asset.bytes, &asset.sha256)
+        && veda_downloads::verify_file(&destination, asset.bytes, &asset.sha256)
             .await
             .is_ok()
     {
@@ -603,7 +619,8 @@ async fn download_asset(
     };
     upsert_download(state, item.clone());
     let _ = app.emit("download-progress", &item);
-    let downloader = Downloader::new().map_err(|error| error.to_string())?;
+    let downloader = Downloader::new()
+        .map_err(|error| contextual_error("Could not start the download client", &error))?;
     let (sender, mut receiver) = watch::channel(DownloadProgress {
         id: asset.id.clone(),
         downloaded_bytes: 0,
@@ -653,12 +670,32 @@ async fn download_asset(
         expected_bytes: asset.bytes,
         sha256: asset.sha256.clone(),
     };
-    let result = downloader
-        .download(&spec, sender)
-        .await
-        .map_err(|error| error.to_string());
+    let result = download_with_retry(&downloader, &spec, sender).await;
     progress_task.abort();
-    result?;
+    if let Err(error) = result {
+        // Reflect the failure in the downloads list so it never looks like a
+        // download that is still running. Partial files stay on disk, so the
+        // next attempt resumes instead of restarting.
+        let part_path = std::path::PathBuf::from(format!("{}.part", destination.display()));
+        let partial_bytes = tokio::fs::metadata(&part_path)
+            .await
+            .map_or(0, |meta| meta.len());
+        let failed = DownloadItem {
+            id: asset.id.clone(),
+            name: asset.name.clone(),
+            detail: "Stopped, will resume on retry".into(),
+            state: "error".into(),
+            progress: partial_bytes as f32 / asset.bytes.max(1) as f32 * 100.0,
+            downloaded_bytes: partial_bytes,
+            total_bytes: asset.bytes,
+            speed_bytes: None,
+        };
+        upsert_download(state, failed);
+        return Err(contextual_error(
+            &format!("Could not download {}", asset.name),
+            &error,
+        ));
+    }
     let installed = DownloadItem {
         id: asset.id.clone(),
         name: asset.name.clone(),
@@ -672,6 +709,34 @@ async fn download_asset(
     upsert_download(state, installed.clone());
     let _ = app.emit("download-progress", installed);
     Ok(destination)
+}
+
+/// Downloads with a bounded number of attempts. Transient transport and
+/// filesystem failures retry automatically and resume from the `.part` file;
+/// permanent failures (bad checksums, HTTP errors, oversized responses)
+/// surface immediately.
+async fn download_with_retry(
+    downloader: &Downloader,
+    spec: &DownloadSpec,
+    sender: tokio::sync::watch::Sender<DownloadProgress>,
+) -> Result<(), DownloadError> {
+    const MAX_ATTEMPTS: usize = 3;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match downloader.download(spec, sender.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < MAX_ATTEMPTS && is_transient(&error) => {
+                tracing::warn!(attempt, %error, asset = %spec.id, "retrying download");
+                tokio::time::sleep(Duration::from_millis(500 * attempt as u64)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_transient(error: &DownloadError) -> bool {
+    matches!(error, DownloadError::Request(_) | DownloadError::Io(_))
 }
 
 fn upsert_download(state: &AppState, item: DownloadItem) {
@@ -781,7 +846,7 @@ mod tests {
 
     #[test]
     fn embedding_retry_limit_strictly_shrinks_and_terminates() {
-        let mut limit = palor_runtime::MAX_EMBEDDING_INPUT_BYTES;
+        let mut limit = veda_runtime::MAX_EMBEDDING_INPUT_BYTES;
         let mut attempts = 0;
         while limit > MIN_EMBEDDING_RETRY_BYTES {
             let next = next_embedding_retry_limit(limit);

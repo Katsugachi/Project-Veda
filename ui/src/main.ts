@@ -31,13 +31,56 @@ type AppState = {
   toasts: string[];
 };
 
+// Storage access is defensive: some embedded webviews block localStorage and
+// an exception here must never take the app down.
+function storageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storageRemove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Storage unavailable; nothing to remove.
+  }
+}
+function storageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage unavailable; keep the in-memory state.
+  }
+}
+
+// Legacy keys from the pre-rename "Palor" builds are read once so existing
+// users keep their theme, sidebar and onboarding choices after upgrading.
+function migrated(key: string): string | null {
+  return storageGet(`veda:${key}`) ?? storageGet(`palor:${key}`);
+}
+
+// Raw OS error codes and transport noise are never shown to users, even if a
+// lower layer leaks them (the backend cleans them up too; this is the last
+// line of defense).
+function errorText(error: unknown): string {
+  let raw = error instanceof Error ? error.message : String(error);
+  raw = raw.replace(/^Error:\s*/i, "");
+  raw = raw.replace(/^error sending request for url \(.+?\):\s*/i, "");
+  raw = raw.replace(/^client error \(connect\)[\s:]*/i, "");
+  raw = raw.replace(/[\s:;]*\(os error \d+\)[\s.;]*$/i, "");
+  const cleaned = raw.trim();
+  return cleaned || raw;
+}
+
 const state: AppState = {
   view: "chat",
-  theme: (localStorage.getItem("palor:theme") as Theme | null) ?? "dark",
-  sidebarCollapsed: localStorage.getItem("palor:sidebar") === "collapsed",
+  theme: (migrated("theme") as Theme | null) ?? "dark",
+  sidebarCollapsed: migrated("sidebar") === "collapsed",
   settingsOpen: false,
   modelOpen: false,
-  onboardingOpen: localStorage.getItem("palor:onboarded") !== "true",
+  onboardingOpen: migrated("onboarded") !== "true",
   setupStep: 0,
   setupRunning: false,
   setupStatus: "Preparing setup…",
@@ -54,7 +97,7 @@ const state: AppState = {
 };
 
 const mount = document.querySelector<HTMLDivElement>("#app");
-if (!mount) throw new Error("Palor app mount was not found");
+if (!mount) throw new Error("Veda app mount was not found");
 const app: HTMLDivElement = mount;
 
 document.documentElement.dataset.theme = state.theme;
@@ -72,7 +115,7 @@ function renderSidebar(): string {
   const activeDownloads = state.downloads.filter((item) => item.state === "downloading" || item.state === "indexing").length;
   return `<aside class="sidebar">
     <div class="side-top">
-      <div class="wordmark">${logo()}<span class="wordmark-label">Palor</span></div>
+      <div class="wordmark">${logo()}<span class="wordmark-label">Veda</span></div>
       <button class="icon-button" id="collapseSidebar" title="Collapse sidebar" aria-label="Collapse sidebar">${icon("panel")}</button>
     </div>
     <nav class="primary-nav" aria-label="Primary">
@@ -105,6 +148,7 @@ function attachmentChips(removable = true): string {
 
 function renderComposer(): string {
   const installed = state.docsets.filter(isDocInstalled).length;
+  const popoverEnter = enterClass("popover", state.modelOpen);
   return `<div class="composer-wrap">
     <div class="composer-shell">
       ${attachmentChips()}
@@ -123,20 +167,19 @@ function renderComposer(): string {
         </div>
       </div>
     </div>
-    ${state.modelOpen ? renderModelPopover() : ""}
+    ${state.modelOpen ? `<div class="popover${popoverEnter}" id="modelPopover">${renderModelPopoverBody()}</div>` : ""}
   </div>`;
 }
 
-function renderModelPopover(): string {
-  return `<div class="popover" id="modelPopover">
+function renderModelPopoverBody(): string {
+  return `
     <div class="popover-title">MiniCPM 5 mode</div>
     <button class="popover-item${state.mode === "fast" ? " selected" : ""}" data-mode="fast">
       ${icon("spark")}<span class="popover-item-copy">Fast<small>Direct answers · lower latency</small></span>${state.mode === "fast" ? icon("check") : ""}
     </button>
     <button class="popover-item${state.mode === "think" ? " selected" : ""}" data-mode="think">
       ${icon("chip")}<span class="popover-item-copy">Think<small>Deeper reasoning · more tokens</small></span>${state.mode === "think" ? icon("check") : ""}
-    </button>
-  </div>`;
+    </button>`;
 }
 
 function renderEmptyChat(): string {
@@ -157,10 +200,10 @@ function renderMessage(message: ChatMessage): string {
   const attachments = message.attachments?.length
     ? `<div class="attachment-row">${message.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span></span>`).join("")}</div>`
     : "";
-  return `<article class="message ${message.role}" data-message-id="${message.id}">
+  return `<article class="message ${message.role}${messageEnterClass(message.id)}" data-message-id="${message.id}">
     <div class="message-avatar">${message.role === "assistant" ? logo() : "A"}</div>
     <div>
-      <div class="message-head">${message.role === "assistant" ? "Palor" : "You"}<span class="message-time">${timeLabel(message.createdAt)}</span></div>
+      <div class="message-head">${message.role === "assistant" ? "Veda" : "You"}<span class="message-time">${timeLabel(message.createdAt)}</span></div>
       ${attachments}
       <div class="message-body">${renderMarkdown(message.content)}${message.streaming ? '<span class="stream-caret"></span>' : ""}</div>
       ${sourceMarkup}
@@ -196,7 +239,7 @@ function renderDocs(): string {
       <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" /></label>
     </div>
     <div class="library-summary">${indexedPages.toLocaleString()} installed pages</div>
-    <div class="doc-grid">${state.docsets.map((doc) => `<article class="doc-card" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
+    <div class="doc-grid${contentEnterClass()}">${state.docsets.map((doc) => `<article class="doc-card" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
       <div class="doc-head"><div class="doc-icon">${doc.initials}</div><div class="doc-copy"><div class="doc-name">${doc.name}</div><div class="doc-version">${doc.version}</div></div></div>
       <div class="doc-description">${doc.detail}</div>
       <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span>${doc.pages !== undefined ? `<span>${doc.pages.toLocaleString()} installed pages</span>` : ""}</div>
@@ -225,17 +268,18 @@ function renderDownloads(): string {
 }
 
 function renderSettings(): string {
+  const entering = enterClass("settings", state.settingsOpen);
   if (!state.settingsOpen) return "";
   const context = state.preflight?.recommendedContext.toLocaleString() ?? "Automatic";
-  return `<div class="modal-backdrop" id="settingsBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  return `<div class="modal-backdrop${entering}" id="settingsBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Appearance</div><div class="setting-detail">${state.theme === "dark" ? "Dark" : "Light"}</div></div><button class="button" id="settingsTheme">Change</button></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">MiniCPM 5 · ${state.selectedQuant.toUpperCase()}</div></div></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Context</div><div class="setting-detail">${context} tokens</div></div></div>
-      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Files</div><div class="setting-detail">Open Palor's data folder</div></div><button class="button" id="settingsDataFolder">Open</button></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Files</div><div class="setting-detail">Open Veda's data folder</div></div><button class="button" id="settingsDataFolder">Open</button></div>
       <div class="privacy-box"><strong>Data handling.</strong> Prompts, documentation and attached code remain on this device. Telemetry is disabled.</div>
-      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Palor</div><div class="setting-detail">Version 0.1.0</div></div></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Veda</div><div class="setting-detail">Version 0.1.0</div></div></div>
     </div>
   </section></div>`;
 }
@@ -250,14 +294,14 @@ function renderOnboardingBody(): string {
     return `<div class="onboarding-kicker">Setup stopped</div><h1>Something went wrong</h1><p class="onboarding-lead setup-error">${escapeHtml(state.setupError)}</p>`;
   }
   if (state.setupRunning) {
-    return `<div class="onboarding-kicker">Setup</div><h1>Preparing Palor</h1><p class="onboarding-lead">Keep Palor open until setup finishes.</p>
+    return `<div class="onboarding-kicker">Setup</div><h1>Preparing Veda</h1><p class="onboarding-lead">Keep Veda open until setup finishes.</p>
       <div class="setup-progress"><div class="progress-track"><div class="progress-value" id="setupProgressBar" style="width:${state.setupProgress}%"></div></div><div class="setup-progress-copy" id="setupProgressText">${escapeHtml(state.setupStatus)}</div></div>`;
   }
   if (state.setupStep === 0) {
     const hasFailures = Boolean(report?.hardFailures.length);
     const ramStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("memory")) ? "fail" : "ok";
     const diskStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("disk")) ? "fail" : "ok";
-    return `<div class="onboarding-kicker">System check</div><h1>Check this device</h1><p class="onboarding-lead">Before downloading, Palor checks available memory and storage. At least 10 GB of free SSD space is required.</p>
+    return `<div class="onboarding-kicker">System check</div><h1>Check this device</h1><p class="onboarding-lead">Before downloading, Veda checks available memory and storage. At least 10 GB of free SSD space is required.</p>
       <div class="preflight-list">
         ${report ? checkRow("memory", "Memory and context", `Recommended context: ${report.recommendedContext.toLocaleString()} tokens`, bytes(report.totalMemoryBytes), ramStatus) : checkRow("memory", "Memory and context", "Checking available RAM…", "—", "warn")}
         ${report ? checkRow("drive", "Fast local storage", "10 GB minimum free space", `${bytes(report.freeDiskBytes)} · ${report.diskKind.toUpperCase()}`, diskStatus) : checkRow("drive", "Fast local storage", "Checking disk and free space…", "—", "warn")}
@@ -278,6 +322,7 @@ function renderOnboardingBody(): string {
 }
 
 function renderOnboarding(): string {
+  const entering = enterClass("onboarding", state.onboardingOpen);
   if (!state.onboardingOpen) return "";
   const hasFailures = Boolean(state.preflight?.hardFailures.length);
   const last = state.setupStep === 2;
@@ -286,17 +331,18 @@ function renderOnboarding(): string {
     ? `<div class="onboarding-note">Downloaded files are kept, so retrying will resume where possible.</div><div class="button-row"><button class="button" id="setupCancelError">Back</button><button class="button primary" id="setupRetry">Retry</button></div>`
     : state.setupRunning
       ? `<div class="onboarding-note">Setup must finish before the rest of the app can be used.</div>`
-      : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Palor" : "Continue"}</button></div>`;
-  return `<div class="modal-backdrop setup-backdrop"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
-    <div class="onboarding-top"><div class="onboarding-brand">${logo()} Palor</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
+      : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Veda" : "Continue"}</button></div>`;
+  return `<div class="modal-backdrop setup-backdrop${entering}"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+    <div class="onboarding-top"><div class="onboarding-brand">${logo()} Veda</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
     <div class="onboarding-body" id="setupTitle">${renderOnboardingBody()}</div>
     <div class="onboarding-bottom">${footer}</div>
   </section></div>`;
 }
 
 function renderReader(): string {
+  const entering = enterClass("reader", Boolean(state.reader));
   if (!state.reader) return "";
-  return `<div class="modal-backdrop" id="readerBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
+  return `<div class="modal-backdrop${entering}" id="readerBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
     <header class="settings-header"><div><h2 id="readerTitle">${escapeHtml(state.reader.title)}</h2><div class="setting-detail">${escapeHtml(state.reader.docset)} · ${escapeHtml(state.reader.section)}</div></div><button class="icon-button" id="closeReader" aria-label="Close source">${icon("x")}</button></header>
     <div class="settings-body"><article class="setting-section message-body">${renderMarkdown(state.reader.text)}</article><div class="privacy-box"><strong>Local source.</strong> This excerpt came from the downloaded documentation index. Canonical reference: ${escapeHtml(state.reader.url)}</div></div>
   </section></div>`;
@@ -306,10 +352,54 @@ function renderToasts(): string {
   return `<div class="toast-stack">${state.toasts.map((toast) => `<div class="toast"><span class="status-dot"></span>${toast}</div>`).join("")}</div>`;
 }
 
+// Messages animate in the first time they appear. The set is consulted during
+// rendering, so a full re-render never replays the animation.
+const enteredMessages = new Set<string>();
+function messageEnterClass(id: string): string {
+  if (enteredMessages.has(id)) return "";
+  enteredMessages.add(id);
+  return " message-enter";
+}
+
+// Modals and popovers only animate when they first open. Step changes,
+// progress updates and other re-renders must not replay the entrance.
+const modalEnterState: Record<string, boolean> = {};
+function enterClass(kind: string, open: boolean): string {
+  const entering = open && !modalEnterState[kind];
+  modalEnterState[kind] = open;
+  return entering ? " entering" : "";
+}
+
+// Content blocks that should animate on view entry, but never again.
+let animateContent = false;
+function contentEnterClass(): string {
+  if (!animateContent) return "";
+  animateContent = false;
+  return " enter";
+}
+
+// The composer is recreated on every render, so its draft and focus are
+// preserved explicitly. Any click must never lose what the user typed.
+let composerDraft = "";
+let composerFocused = false;
+
 function render(): void {
+  const previous = document.querySelector<HTMLTextAreaElement>("#composerInput");
+  composerFocused = Boolean(previous && previous === document.activeElement);
   const view = state.view === "chat" ? renderChat() : state.view === "docs" ? renderDocs() : renderDownloads();
   app.innerHTML = `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`;
   bindEvents();
+  const composer = document.querySelector<HTMLTextAreaElement>("#composerInput");
+  if (composer) {
+    composer.value = composerDraft;
+    composer.style.height = "auto";
+    composer.style.height = `${Math.min(composer.scrollHeight, 190)}px`;
+    if (composerFocused) {
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+      composerFocused = false;
+    }
+  }
   if (state.messages.length) requestAnimationFrame(scrollMessages);
 }
 
@@ -317,7 +407,10 @@ type TransitionDocument = Document & {
   startViewTransition?: (update: () => void) => unknown;
 };
 
-function smoothRender(): void {
+// Only view navigation animates, and only the content area participates
+// (see `.view { view-transition-name: veda-view; }`). Every other state
+// change renders directly, so clicks never flash the whole window.
+function transitionRender(): void {
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const start = (document as TransitionDocument).startViewTransition;
   if (!reducedMotion && start) {
@@ -340,7 +433,7 @@ function scheduleRender(): void {
 function toggleTheme(): void {
   state.theme = state.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = state.theme;
-  localStorage.setItem("palor:theme", state.theme);
+  storageSet("veda:theme", state.theme);
   const toggle = document.querySelector<HTMLElement>("#themeToggle");
   if (toggle) toggle.innerHTML = icon(state.theme === "dark" ? "moon" : "sun");
   const detail = document.querySelector<HTMLElement>("#settingsTheme")?.closest(".setting-row")?.querySelector<HTMLElement>(".setting-detail");
@@ -359,9 +452,15 @@ function scrollMessages(): void {
 }
 
 function setView(view: View): void {
-  state.view = view;
   state.modelOpen = false;
-  smoothRender();
+  const changed = state.view !== view;
+  state.view = view;
+  if (changed) {
+    animateContent = true;
+    transitionRender();
+  } else {
+    render();
+  }
 }
 
 async function installDocsetBlocking(id: string): Promise<void> {
@@ -373,17 +472,17 @@ async function installDocsetBlocking(id: string): Promise<void> {
   state.setupProgress = 0;
   state.setupStatus = `Preparing ${doc.name}…`;
   doc.state = "downloading";
-  smoothRender();
+  render();
   try {
     await bridge.installDocset(id);
     [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
     state.setupRunning = false;
     state.onboardingOpen = false;
-    smoothRender();
+    render();
   } catch (error) {
-    state.setupError = error instanceof Error ? error.message : String(error);
+    state.setupError = errorText(error);
     state.setupRunning = false;
-    smoothRender();
+    render();
   }
 }
 
@@ -410,18 +509,18 @@ async function removeDocsetBlocking(id: string): Promise<void> {
   state.setupError = undefined;
   state.setupProgress = 0;
   state.setupStatus = `Removing ${doc.name}…`;
-  smoothRender();
+  render();
   try {
     await bridge.removeDocset(id);
     [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
     state.setupRunning = false;
     state.onboardingOpen = false;
-    smoothRender();
+    render();
   } catch (error) {
     state.setupRunning = false;
     state.onboardingOpen = false;
-    smoothRender();
-    toast(`Could not remove ${doc.name}: ${error instanceof Error ? error.message : String(error)}`);
+    render();
+    toast(`Could not remove ${doc.name}: ${errorText(error)}`);
   }
 }
 
@@ -431,7 +530,7 @@ async function runSetup(): Promise<void> {
   state.setupError = undefined;
   state.setupProgress = 0;
   state.setupStatus = "Preparing model files…";
-  smoothRender();
+  render();
   try {
     await bridge.prepareResources(state.selectedQuant);
     for (const id of state.setupDocsets) {
@@ -442,14 +541,14 @@ async function runSetup(): Promise<void> {
     }
     state.docsets = await bridge.docsets();
     state.downloads = await bridge.downloads();
-    localStorage.setItem("palor:onboarded", "true");
+    storageSet("veda:onboarded", "true");
     state.setupRunning = false;
     state.onboardingOpen = false;
-    smoothRender();
+    render();
   } catch (error) {
-    state.setupError = error instanceof Error ? error.message : String(error);
+    state.setupError = errorText(error);
     state.setupRunning = false;
-    smoothRender();
+    render();
   }
 }
 
@@ -461,7 +560,7 @@ async function addFiles(files: FileList): Promise<void> {
     const language = file.name.split(".").pop()?.toLowerCase() ?? "text";
     state.attachments.push({ id: crypto.randomUUID(), name: file.name, bytes: file.size, language, content });
   }
-  smoothRender();
+  render();
 }
 
 async function sendMessage(): Promise<void> {
@@ -475,53 +574,57 @@ async function sendMessage(): Promise<void> {
   state.messages.push(assistant);
   state.attachments = [];
   state.busy = true;
-  smoothRender();
+  composerDraft = "";
+  render();
   try {
     const response = await bridge.ask({ chatId: "local", message: text, mode: state.mode, docsets: state.docsets.filter(isDocInstalled).map((doc) => doc.id), attachments });
     assistant.content = response.content;
     assistant.sources = response.sources;
     assistant.streaming = false;
   } catch (error) {
-    assistant.content = `Palor could not complete the local request. ${error instanceof Error ? error.message : String(error)}`;
+    assistant.content = `Veda could not complete the local request. ${errorText(error)}`;
     assistant.streaming = false;
   } finally {
     state.busy = false;
-    smoothRender();
+    render();
   }
 }
 
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view as View)));
-  document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; setView("chat"); });
+  document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; enteredMessages.clear(); composerDraft = ""; setView("chat"); });
   document.querySelector("#collapseSidebar")?.addEventListener("click", () => {
     state.sidebarCollapsed = !state.sidebarCollapsed;
-    localStorage.setItem("palor:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
+    storageSet("veda:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
     document.querySelector(".app-shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
   });
   document.querySelector("#themeToggle")?.addEventListener("click", toggleTheme);
   document.querySelector("#settingsTheme")?.addEventListener("click", toggleTheme);
-  document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; smoothRender(); });
-  document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; smoothRender(); });
-  document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; smoothRender(); } });
-  document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; smoothRender(); });
-  document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; smoothRender(); }));
+  document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; render(); });
+  document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; render(); });
+  document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; render(); } });
+  document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; render(); });
+  document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; render(); }));
   document.querySelector("#sendButton")?.addEventListener("click", () => void sendMessage());
   const input = document.querySelector<HTMLTextAreaElement>("#composerInput");
-  input?.addEventListener("input", () => { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; });
+  input?.addEventListener("input", () => { composerDraft = input.value; input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; });
   input?.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } });
   document.querySelector("#attachButton")?.addEventListener("click", () => document.querySelector<HTMLInputElement>("#fileInput")?.click());
   document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", (event) => { const files = (event.currentTarget as HTMLInputElement).files; if (files) void addFiles(files); });
-  document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); smoothRender(); }));
+  document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); render(); }));
   document.querySelectorAll<HTMLElement>(".install-doc").forEach((button) => button.addEventListener("click", () => void installDocsetBlocking(button.dataset.docset ?? "")));
   document.querySelectorAll<HTMLElement>(".remove-doc").forEach((button) => button.addEventListener("click", () => void removeDocsetBlocking(button.dataset.docset ?? "")));
   document.querySelectorAll<HTMLElement>("[data-source]").forEach((button) => button.addEventListener("click", () => {
     const url = button.dataset.source ?? "";
-    void bridge.readSource(url).then((source) => { state.reader = source; smoothRender(); }).catch((error: unknown) => toast(`Could not open source: ${error instanceof Error ? error.message : String(error)}`));
+    void bridge.readSource(url).then((source) => { state.reader = source; render(); }).catch((error: unknown) => toast(`Could not open source: ${errorText(error)}`));
   }));
-  document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; smoothRender(); });
-  document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; smoothRender(); } });
-  document.querySelector("#dataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
-  document.querySelector("#settingsDataFolder")?.addEventListener("click", () => void bridge.revealDataFolder());
+  document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; render(); });
+  document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; render(); } });
+  const openDataFolder = () => {
+    void bridge.revealDataFolder().catch((error: unknown) => toast(`Could not open the data folder: ${errorText(error)}`));
+  };
+  document.querySelector("#dataFolder")?.addEventListener("click", openDataFolder);
+  document.querySelector("#settingsDataFolder")?.addEventListener("click", openDataFolder);
   document.querySelector<HTMLInputElement>("#docSearch")?.addEventListener("input", (event) => {
     const query = (event.currentTarget as HTMLInputElement).value.trim().toLowerCase();
     document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
@@ -529,9 +632,9 @@ function bindEvents(): void {
     });
   });
   document.querySelector("#scopeButton")?.addEventListener("click", () => setView("docs"));
-  document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); smoothRender(); });
+  document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); render(); });
   document.querySelector("#setupNext")?.addEventListener("click", () => {
-    if (state.setupStep < 2) { state.setupStep += 1; smoothRender(); return; }
+    if (state.setupStep < 2) { state.setupStep += 1; render(); return; }
     void runSetup();
   });
   document.querySelector("#setupRetry")?.addEventListener("click", () => {
@@ -542,10 +645,10 @@ function bindEvents(): void {
     state.setupError = undefined;
     state.setupRunning = false;
     state.setupStep = 2;
-    smoothRender();
+    render();
   });
-  document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; smoothRender(); }));
-  document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); smoothRender(); }));
+  document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; render(); }));
+  document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); render(); }));
 }
 
 async function init(): Promise<void> {
@@ -560,7 +663,7 @@ async function init(): Promise<void> {
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
   const docsReady = docsets.some(isDocInstalled);
   if (bridge.isDesktop() && (!modelReady || !docsReady)) {
-    localStorage.removeItem("palor:onboarded");
+    storageRemove("veda:onboarded");
     state.onboardingOpen = true;
   }
   await bridge.onDownloadProgress((item) => {

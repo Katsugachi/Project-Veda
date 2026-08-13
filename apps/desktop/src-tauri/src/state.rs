@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 pub struct AppState {
     pub data_dir: PathBuf,
     pub downloads: Arc<RwLock<Vec<crate::commands::DownloadItem>>>,
-    pub search_index: Arc<RwLock<Option<Arc<palor_search::HybridIndex>>>>,
+    pub search_index: Arc<RwLock<Option<Arc<veda_search::HybridIndex>>>>,
 }
 
 impl AppState {

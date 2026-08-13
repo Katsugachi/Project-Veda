@@ -1,19 +1,19 @@
 [package]
-name = "palor-docpack"
+name = "veda-docpack"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "palor-docpack"
+name = "veda-docpack"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.5", features = ["derive"] }
-palor-core = { path = "../../crates/palor-core" }
-palor-docs = { path = "../../crates/palor-docs" }
+veda-core = { path = "../../crates/veda-core" }
+veda-docs = { path = "../../crates/veda-docs" }
 regex = "1.11"
 scraper = "0.24"
 walkdir = "2.5"

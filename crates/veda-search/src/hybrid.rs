@@ -1,7 +1,7 @@
 use crate::{LexicalIndex, VectorIndex};
-use palor_core::DocsetId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use veda_core::DocsetId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

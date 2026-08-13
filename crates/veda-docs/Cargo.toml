@@ -1,12 +1,12 @@
 [package]
-name = "palor-docs"
+name = "veda-docs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-palor-core = { path = "../palor-core" }
+veda-core = { path = "../veda-core" }
 regex = "1.11"
 scraper = "0.24"
 serde.workspace = true

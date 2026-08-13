@@ -1,11 +1,12 @@
 [package]
-name = "palor-core"
+name = "veda-search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+veda-core = { path = "../veda-core" }
 serde.workspace = true
 thiserror.workspace = true
 

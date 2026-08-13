@@ -1,10 +1,10 @@
-use palor_core::DocsetId;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
+use veda_core::DocsetId;
 
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub const MAX_PAGES_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -82,7 +82,7 @@ impl DocPack {
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let temporary = destination.with_extension("palordoc.part");
+        let temporary = destination.with_extension("vedadoc.part");
         let file = File::create(&temporary)?;
         let encoder = zstd::Encoder::new(file, 12)?;
         let mut archive = tar::Builder::new(encoder);
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn pack_round_trip() {
         let directory = tempfile::tempdir().unwrap();
-        let destination = directory.path().join("python.palordoc");
+        let destination = directory.path().join("python.vedadoc");
         let manifest = DocPackManifest {
             schema_version: 1,
             id: DocsetId::Python,

@@ -1,6 +1,12 @@
 use crate::LlamaClient;
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
+    io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
     time::sleep,
 };
@@ -17,16 +23,68 @@ pub struct SidecarConfig {
     pub threads: usize,
 }
 
+/// Ring buffer that keeps the most recent llama.cpp log lines. Logs are only
+/// read back when startup fails, so the process can write as much output as
+/// it wants without ever blocking on a full pipe buffer.
+#[derive(Default)]
+struct LogTail {
+    bytes: Mutex<Vec<u8>>,
+}
+
+impl LogTail {
+    const MAX_BYTES: usize = 16 * 1024;
+
+    fn push(&self, chunk: &[u8]) {
+        let mut bytes = self
+            .bytes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        bytes.extend_from_slice(chunk);
+        if bytes.len() > Self::MAX_BYTES {
+            let excess = bytes.len() - Self::MAX_BYTES;
+            bytes.drain(..excess);
+        }
+    }
+
+    fn snapshot(&self) -> String {
+        let bytes = self
+            .bytes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let mut lines = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        if lines.len() > 6 {
+            lines.drain(..lines.len() - 6);
+        }
+        lines.join("\n")
+    }
+}
+
+async fn drain_log<R>(reader: R, tail: Arc<LogTail>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tail.push(line.as_bytes());
+        tail.push(b"\n");
+    }
+}
+
 pub struct LlamaSidecar {
     child: Child,
     pub base_url: String,
     pub api_key: String,
+    logs: Arc<LogTail>,
 }
 
 impl LlamaSidecar {
     pub async fn spawn(config: SidecarConfig) -> Result<Self, SidecarError> {
         let port = free_port()?;
-        let api_key = format!("palor-{}", Uuid::new_v4());
+        let api_key = format!("veda-{}", Uuid::new_v4());
         let mut command = Command::new(&config.executable);
         command
             .arg("--model")
@@ -65,23 +123,37 @@ impl LlamaSidecar {
                 command.arg("--pooling").arg(pooling);
             }
         }
+        let logs = Arc::new(LogTail::default());
         let mut sidecar = Self {
             child: command.spawn()?,
             base_url: format!("http://127.0.0.1:{port}"),
             api_key,
+            logs: Arc::clone(&logs),
         };
+        // Drain both pipes so a chatty llama.cpp build can never fill the
+        // OS pipe buffer and stall the server.
+        if let Some(stdout) = sidecar.child.stdout.take() {
+            tokio::spawn(drain_log(stdout, Arc::clone(&logs)));
+        }
+        if let Some(stderr) = sidecar.child.stderr.take() {
+            tokio::spawn(drain_log(stderr, logs));
+        }
         let client = LlamaClient::new(&sidecar.base_url, &sidecar.api_key)?;
         for _ in 0..120 {
             if let Some(status) = sidecar.child.try_wait()? {
-                return Err(SidecarError::EarlyExit(status.to_string()));
+                return Err(SidecarError::EarlyExit {
+                    status: status.to_string(),
+                    log: SidecarError::log_suffix(&sidecar.logs.snapshot()),
+                });
             }
             if client.health().await.is_ok() {
                 return Ok(sidecar);
             }
             sleep(Duration::from_millis(250)).await;
         }
+        let log = SidecarError::log_suffix(&sidecar.logs.snapshot());
         sidecar.stop().await?;
-        Err(SidecarError::HealthTimeout)
+        Err(SidecarError::HealthTimeout { log })
     }
 
     pub async fn stop(&mut self) -> Result<(), std::io::Error> {
@@ -109,8 +181,20 @@ pub enum SidecarError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Client(#[from] crate::LlamaClientError),
-    #[error("llama.cpp exited before becoming healthy: {0}")]
-    EarlyExit(String),
-    #[error("llama.cpp did not become healthy within 30 seconds")]
-    HealthTimeout,
+    #[error("llama.cpp exited before becoming healthy: {status}{log}")]
+    EarlyExit { status: String, log: String },
+    #[error("llama.cpp did not become healthy within 30 seconds{log}")]
+    HealthTimeout { log: String },
+}
+
+impl SidecarError {
+    /// Formats the captured log tail as a display suffix, or an empty string
+    /// when llama.cpp produced no output.
+    fn log_suffix(log: &str) -> String {
+        if log.is_empty() {
+            String::new()
+        } else {
+            format!("\nllama.cpp output:\n{log}")
+        }
+    }
 }

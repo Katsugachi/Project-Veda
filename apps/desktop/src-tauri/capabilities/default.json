@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimum permissions for the Palor desktop window",
+  "description": "Minimum permissions for the Veda desktop window",
   "windows": ["main"],
   "permissions": [
     "core:default",

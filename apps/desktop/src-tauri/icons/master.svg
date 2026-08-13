@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Palor logo. Font Awesome Free v7.3.1 icon path, CC BY 4.0. -->
+  <!-- Veda logo. Font Awesome Free v7.3.1 icon path, CC BY 4.0. -->
   <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1f2520"/><stop offset="1" stop-color="#101411"/></linearGradient></defs>
   <rect x="32" y="32" width="960" height="960" rx="226" fill="url(#bg)"/>
   <g transform="translate(194 194) scale(.994)" fill="#a2d5ab">
