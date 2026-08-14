@@ -187,3 +187,62 @@ Rust: `model_files` and `is_bind_collision` are pure and unit-tested; the
 `AskRequest` field is `#[serde(default)]` so older clients and the browser
 preview remain compatible. As before, the Rust toolchain is unavailable in
 this sandbox, so the Rust tests run in CI (`cargo fmt/test/clippy`).
+
+---
+
+## Round 5 — the build was actually red; this round made CI green
+
+Previous rounds claimed verification without ever compiling the Rust. The
+repo's CI (`.github/workflows/ci.yml`) was failing on every push. This round
+found the real failures from the CI logs, fixed them, and verified with real
+tools.
+
+### What CI actually reported (read from the Actions logs)
+
+| Commit | Failure | Root cause |
+|---|---|---|
+| `62605c2` | `cargo fmt --all -- --check` | `context.rs`: two single-line `assert_eq!`s rustfmt wants broken; `commands.rs`: a match arm written with block braces that rustfmt joins on one line |
+| `5d2a086` | `cargo test --workspace` → E0425 | `sidecar.rs` called `spawn_once(...)` bare, but it is an associated function (`Self::spawn_once`) |
+| `bcebc0f` | `cargo clippy -D warnings` | `context.rs`'s `const GIB` became dead code in the lib target after the budget rewrite (only tests used it) |
+
+### How each was fixed and verified (real tools, not claims)
+
+* **rustfmt**: obtained a real `rustfmt 1.88` binary via the npm package
+  `@rustbin/rustfmt-1.88.0-x86_64-unknown-linux-gnu`, ran it over the whole
+  workspace with the repo's `rustfmt.toml`, and applied exactly its output
+  (`cargo fmt --check` equivalent).
+* **rustc/cargo**: installed the real `rustc`, `cargo` and `rust-std` binaries
+  from npm (`@rustbin/...`) and compiled the crates offline against minimal
+  API-surface stubs for serde/thiserror/tokio/reqwest/tauri/sysinfo/etc.:
+  * `veda-core` — compiles; **15/15 tests pass** (context formula, preflight,
+    clamping, growth).
+  * `veda-runtime` — compiles; **7/7 tests pass** (incl. the new
+    `bind_collision_is_detected_from_the_log_tail`).
+  * `veda-desktop` (`commands.rs`) — compiles; **`model_files` test passes**.
+* **clippy**: the one dead-code warning (`const GIB`) was fixed by scoping the
+  constant to `#[cfg(test)]`; all other changed code was reviewed against
+  clippy lints (no other findings; clippy itself is not available offline).
+
+### CI result (the authoritative check)
+
+```
+Run npm run build                         ✔
+Run cargo fmt --all -- --check             ✔
+Run cargo test --workspace                 ✔
+Run cargo clippy --workspace --all-targets -- -D warnings   ✔
+```
+
+All four commits are on `arena/019ffefc-project-veda`; the head commit
+`a63205c` has a green `test` check run.
+
+### Honest note on verification limits
+
+* The npm-provided toolchain is Rust 1.88; CI's `dtolnay/rust-toolchain@stable`
+  is newer. rustfmt output for the touched code is stable across these
+  versions and CI's `cargo fmt --check` is green, so this is a non-issue in
+  practice.
+* The stub-based compiles replace proc-macro crates (serde derives, thiserror,
+  async-trait, `#[tauri::command]`) with no-op equivalents, so code that
+  depends on generated impls (e.g. `serde_json::to_vec(&x)` where `x` must be
+  `Serialize`) is not fully exercised — but CI's `cargo test --workspace` and
+  `cargo clippy` now compile the real dependency tree and pass.
