@@ -1,7 +1,11 @@
 # Veda 
 [![Unsigned desktop release](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml/badge.svg)](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml) <br><br>
 Veda is a Rust-first, local-only desktop assistant for Python, C++, HTML, CSS, JavaScript and attached source code. It runs **MiniCPM 5** through a pinned native `llama.cpp` runtime, asks the model to plan documentation searches, fuses BM25 and semantic results, and answers with local source citations.
-
+## Get Started
+### Download your corresponding setup file
+Windows x64 <br>
+Windows ARM64 <br>
+MacOS 
 ## Targets
 
 - macOS 12+ universal DMG: Intel and Apple Silicon application shell; native Metal runtime selected after launch.
