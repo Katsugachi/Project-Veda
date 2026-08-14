@@ -219,11 +219,6 @@ button { color: inherit; }
 .model-button:hover { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
 .model-button .icon { width: 15px; height: 15px; }
 .model-name { white-space: nowrap; }
-/* The active reasoning mode is stated in words on a filled chip, so it is
-   unambiguous in both themes rather than relying on a coloured dot. */
-.mode-tag { height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: .02em; background: var(--accent); color: var(--on-accent); }
-.model-button.mode-think .mode-tag { background: var(--deep); color: var(--on-accent); }
-html[data-theme="light"] .model-button.mode-think .mode-tag { color: #17251b; }
 .send-button { appearance: none; border: 0; width: 33px; height: 33px; border-radius: 10px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); cursor: pointer; }
 .send-button:hover { filter: brightness(1.06); }
 .send-button:disabled { opacity: .38; cursor: default; filter: none; }

@@ -699,7 +699,7 @@ async fn download_asset(
     let installed = DownloadItem {
         id: asset.id.clone(),
         name: asset.name.clone(),
-        detail: "Verified and ready".into(),
+        detail: String::new(),
         state: "installed".into(),
         progress: 100.0,
         downloaded_bytes: asset.bytes,

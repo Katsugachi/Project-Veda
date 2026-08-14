@@ -162,7 +162,7 @@ pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadItem> {
             items.push(DownloadItem {
                 id: asset.id,
                 name: asset.name,
-                detail: "Verified and ready".into(),
+                detail: String::new(),
                 state: "installed".into(),
                 progress: 100.0,
                 downloaded_bytes: asset.bytes,

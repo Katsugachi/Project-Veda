@@ -23,8 +23,6 @@ const paths: Record<string, string> = {
   stop: '<rect x="7" y="7" width="10" height="10" rx="1.6"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>',
   pencil: '<path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
-  bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
-  brain: '<path d="M12 5a3 3 0 0 0-6 0 3 3 0 0 0-1 5.8A3 3 0 0 0 7 17a3 3 0 0 0 5 2z"/><path d="M12 5a3 3 0 0 1 6 0 3 3 0 0 1 1 5.8A3 3 0 0 1 17 17a3 3 0 0 1-5 2z"/><path d="M12 5v14"/>',
 };
 
 export function icon(name: keyof typeof paths, className = "icon"): string {

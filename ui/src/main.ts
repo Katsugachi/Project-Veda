@@ -125,7 +125,10 @@ const state: AppState = {
   readerLoading: false,
   modelOpen: false,
   scopeOpen: false,
-  onboardingOpen: migrated("onboarded") !== "true",
+  // Setup is offered on the first run, but "Skip for now" must stick: once
+  // skipped, the modal does not reappear on launch (the Docs tab stays
+  // reachable) until the user opens setup again from Settings.
+  onboardingOpen: migrated("onboarded") !== "true" && migrated("onboarding-skipped") !== "true",
   setupStep: 0,
   setupRunning: false,
   setupStatus: "Preparing setup…",
@@ -278,7 +281,6 @@ function renderModeMenu(): string {
   const option = (mode: ReasoningMode, detail: string) => {
     const selected = state.mode === mode;
     return `<button class="popover-item${selected ? " selected" : ""}" data-mode="${mode}" role="menuitemradio" aria-checked="${selected}">
-      <span class="popover-item-icon">${icon(mode === "think" ? "brain" : "bolt")}</span>
       <span class="popover-item-copy">${modeLabel(mode)}<small>${detail}</small></span>
       <span class="popover-item-check">${selected ? icon("check") : ""}</span>
     </button>`;
@@ -326,7 +328,7 @@ function renderComposer(): string {
           </div>
           <div class="composer-right">
             <div class="menu-anchor">
-              <button class="model-button mode-${state.mode}" id="modelButton" aria-expanded="${state.modelOpen}" aria-haspopup="menu" title="Reasoning mode: ${modeLabel(state.mode)}">${icon(state.mode === "think" ? "brain" : "bolt")}<span class="model-name">MiniCPM 5</span><span class="mode-tag">${modeLabel(state.mode)}</span>${icon("chevron")}</button>
+              <button class="model-button mode-${state.mode}" id="modelButton" aria-expanded="${state.modelOpen}" aria-haspopup="menu" title="Reasoning mode: ${modeLabel(state.mode)}"><span class="model-name">MiniCPM 5${state.mode === "think" ? " Think" : ""}</span>${icon("chevron")}</button>
               ${state.modelOpen ? renderModeMenu() : ""}
             </div>
             ${busy
@@ -471,10 +473,12 @@ function renderSettings(): string {
   const entering = enterClass("settings", state.settingsOpen);
   if (!state.settingsOpen) return "";
   const recommended = state.preflight?.recommendedContext;
+  const modelInstalled = state.downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
   return `<div class="modal-backdrop${entering}" id="settingsBackdrop" data-key="settings"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Appearance</div><div class="setting-detail">${state.theme === "dark" ? "Dark" : "Light"}</div></div><button class="button" id="settingsTheme">Change</button></div>
+      ${modelInstalled ? "" : `<div class="setting-row"><div class="setting-copy"><div class="setting-name">Setup</div><div class="setting-detail">Model files are not installed yet.</div></div><button class="button primary" id="settingsSetup">Set up Veda</button></div>`}
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">MiniCPM 5 · ${state.selectedQuant.toUpperCase()}</div></div></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Reasoning</div><div class="setting-detail">${modeLabel(state.mode)}</div></div><button class="button" id="settingsMode">Change</button></div>
       <div class="setting-block">
@@ -556,7 +560,7 @@ function renderOnboarding(): string {
     ? `<div class="onboarding-note">Downloaded files are kept, so retrying will resume where possible.</div><div class="button-row"><button class="button" id="setupCancelError">Back</button><button class="button primary" id="setupRetry">Retry</button></div>`
     : state.setupRunning
       ? `<div class="onboarding-note">Setup must finish before the rest of the app can be used.</div>`
-      : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Veda" : "Continue"}</button></div>`;
+      : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button" id="setupSkip">Skip for now</button><button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Veda" : "Continue"}</button></div>`;
   return `<div class="modal-backdrop setup-backdrop${entering}" data-key="onboarding"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
     <div class="onboarding-top"><div class="onboarding-brand">${logo()} Veda</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
     <div class="onboarding-body${entering}" id="setupTitle">${renderOnboardingBody()}</div>
@@ -920,6 +924,7 @@ async function runSetup(): Promise<void> {
     }
     await Promise.all([loadDocsets(), loadDownloads()]);
     storageSet("veda:onboarded", "true");
+    storageRemove("veda:onboarding-skipped");
     state.setupRunning = false;
     state.onboardingOpen = false;
     render();
@@ -1256,6 +1261,27 @@ function bindGlobalEvents(): void {
         state.setupStep = Math.max(0, state.setupStep - 1);
         render();
         return;
+      case "setupSkip":
+        // Setup is optional: Docs and Downloads work without the model, so
+        // closing the modal must never leave the app unusable. The choice is
+        // remembered so it does not reappear on every launch.
+        state.onboardingOpen = false;
+        state.setupRunning = false;
+        state.setupError = undefined;
+        storageSet("veda:onboarding-skipped", "true");
+        render();
+        return;
+      case "settingsSetup":
+        // The skipped flow is reopened from Settings, which also clears the
+        // skip flag so the next launch with a missing model offers setup again.
+        state.settingsOpen = false;
+        state.onboardingOpen = true;
+        state.setupRunning = false;
+        state.setupError = undefined;
+        state.setupStep = 0;
+        storageRemove("veda:onboarding-skipped");
+        render();
+        return;
       case "setupNext":
         if (state.setupStep === 1 && state.selectedQuant === "q8" && !q8Supported()) {
           state.selectedQuant = "q5";
@@ -1380,13 +1406,30 @@ function bindGlobalEvents(): void {
   });
 }
 
+// Local bridge calls (preflight, docsets, downloads) resolve in milliseconds
+// on a healthy device. If one ever stalls, the page must not sit on
+// "Loading documentation…" forever: the call is raced against a timeout so a
+// stuck load becomes a recoverable error state with a Retry button.
+function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 15_000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error(`${label} took too long. Try again.`)), milliseconds);
+    }),
+  ]);
+}
+
 async function init(): Promise<void> {
   bindGlobalEvents();
   render();
 
   // Each source is awaited independently: a single failure must never leave
   // the Docs or Downloads pages permanently blank.
-  const results = await Promise.allSettled([bridge.preflight(), bridge.docsets(), bridge.downloads()]);
+  const results = await Promise.allSettled([
+    withTimeout(bridge.preflight(), "The system check"),
+    withTimeout(bridge.docsets(), "The documentation list"),
+    withTimeout(bridge.downloads(), "The downloads list"),
+  ]);
   const [preflightResult, docsetsResult, downloadsResult] = results;
 
   if (preflightResult.status === "fulfilled") state.preflight = preflightResult.value;
@@ -1422,7 +1465,12 @@ async function init(): Promise<void> {
 
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
   const docsReady = state.docsets.some(isDocInstalled);
-  if (bridge.isDesktop() && (!modelReady || !docsReady)) {
+  // Setup is offered when something is missing, but it must never lock the
+  // app behind a modal: Docs and Downloads work without the model, so a
+  // user who skips setup ("Skip for now") can still browse and install
+  // documentation. The choice is remembered so the modal does not reappear
+  // on every launch until they open it again from Settings.
+  if (bridge.isDesktop() && !migrated("onboarding-skipped") && (!modelReady || !docsReady)) {
     storageRemove("veda:onboarded");
     state.onboardingOpen = true;
   }

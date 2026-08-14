@@ -240,12 +240,16 @@ describe("Issue 5 & 8 — messages send, never freeze, and land while away", () 
 describe("Issue 6 — the active mode is legible in light mode", () => {
   it("states the mode in words on the button, not just as a colour", async () => {
     await loadApp({ theme: "light" });
-    expect($("#modelButton")!.textContent).toContain("Fast");
+    // Fast is the default but is deliberately not spelled out on the button;
+    // it simply reads "MiniCPM 5" until Think is selected.
+    expect($("#modelButton")!.textContent).toContain("MiniCPM 5");
+    expect($("#modelButton")!.textContent).not.toContain("Fast");
+    expect($(".mode-tag")).toBeNull();
     click("#modelButton");
     await flush(10);
     click('[data-mode="think"]');
     await flush(10);
-    expect($("#modelButton")!.textContent).toContain("Think");
+    expect($("#modelButton")!.textContent).toContain("MiniCPM 5 Think");
     expect($("#modelButton")!.className).toContain("mode-think");
   });
 
@@ -405,7 +409,13 @@ describe("Issue 10 — the useless download logos are gone", () => {
     await flush(20);
     const row = $(".download-row")!;
     expect(row.querySelector(".download-name")?.textContent).toBeTruthy();
-    expect(row.querySelector(".download-detail")?.textContent).toBeTruthy();
+    // The first row is the model, whose filler "Verified and ready" detail was
+    // removed; its detail is now deliberately empty. A row with real detail
+    // (the search support or an indexed docset) must still show it.
+    const detailed = $$(".download-row").find((candidate) => (candidate.querySelector(".download-detail")?.textContent ?? "").length > 0)!;
+    expect(detailed).toBeTruthy();
+    expect(detailed.querySelector(".download-detail")?.textContent).toBeTruthy();
+    expect(bodyText()).not.toContain("Verified and ready");
     expect(row.querySelector(".progress-track")).toBeTruthy();
     expect(row.querySelector(".download-state")?.textContent).toBeTruthy();
   });
@@ -639,7 +649,7 @@ describe("Q5 default, Q8 gating and setup failures", () => {
           return items.some((item) => item.id === "minicpm5-q8")
             ? items
             : [
-                { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 },
+                { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 },
                 ...items,
               ];
         },
@@ -736,5 +746,93 @@ describe("Q5 default, Q8 gating and setup failures", () => {
     await flush(20);
     expect($("#contextDetail")!.textContent).toContain("Automatic");
     expect($("#contextDetail")!.textContent).toContain("131,072 on this device");
+  });
+});
+
+describe("Issue 26 — the Think/Fast chip and the brain/bolt SVGs are gone from the model control", () => {
+  it("renders only the model name on the button: 'MiniCPM 5' or 'MiniCPM 5 Think'", async () => {
+    await loadApp();
+    const button = $("#modelButton")!;
+    expect(button.textContent).toBe("MiniCPM 5");
+    // No mode chip anywhere.
+    expect($(".mode-tag")).toBeNull();
+    expect(cssSource()).not.toContain(".mode-tag");
+    // The only SVG on the button is the chevron affordance; the bolt that
+    // used to sit next to the name is gone.
+    expect(button.querySelectorAll("svg").length).toBe(1);
+    expect(button.querySelector('[viewBox="0 0 24 24"] path[d^="M13 2"]')).toBeNull();
+
+    // Selecting Think spells it out on the button.
+    click("#modelButton");
+    await flush(10);
+    click('[data-mode="think"]');
+    await flush(10);
+    expect($("#modelButton")!.textContent).toBe("MiniCPM 5 Think");
+  });
+
+  it("keeps the mode menu switchable but without brain/bolt icons", async () => {
+    await loadApp();
+    click("#modelButton");
+    await flush(10);
+    const menu = $(".mode-popover")!;
+    expect(menu.querySelectorAll(".popover-item-icon").length).toBe(0);
+    expect(menu.textContent).toContain("Think");
+    expect(menu.textContent).toContain("Fast");
+    click('[data-mode="fast"]');
+    await flush(10);
+    expect($("#modelButton")!.textContent).toBe("MiniCPM 5");
+  });
+});
+
+describe("Issue 27 — the Docs tab is reachable even when setup is not complete", () => {
+  it("lets setup be skipped, then Docs can be browsed and docs downloaded", async () => {
+    await loadApp({ onboarded: false });
+    expect($(".onboarding")).toBeTruthy();
+    // Skipping closes the modal instead of locking the whole app.
+    click("#setupSkip");
+    await flush(20);
+    expect($(".onboarding")).toBeNull();
+
+    // The Docs tab is fully usable without the model.
+    click('[data-view="docs"]');
+    await flush(30);
+    expect($$(".doc-card").length).toBe(5);
+    expect($(".library-summary")!.textContent).toMatch(/installed pages across \d+ docsets/);
+
+    // Downloads still work after skipping setup.
+    const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
+    expect(install).toBeTruthy();
+    install.click();
+    await waitFor(() => !$(".onboarding"), 12000);
+    const htmlCard = $$(".doc-card").find((card) => card.textContent?.includes("HTML"))!;
+    expect(htmlCard.textContent).toContain("Installed");
+
+    // The skip is remembered across restarts, so the app never re-traps the
+    // user behind the modal on every launch even when onboarding is still
+    // flagged as incomplete.
+    const mod: any = await loadApp({ onboarded: false, keepStorage: true });
+    expect(mod.__test.state.onboardingOpen).toBe(false);
+    expect(localStorage.getItem("veda:onboarding-skipped")).toBe("true");
+  });
+
+  it("offers 'Set up Veda' from Settings when the model is missing", async () => {
+    await loadApp({
+      bridge: (actual) => ({
+        ...actual,
+        downloads: async () => {
+          const items = await actual.downloads();
+          return items.filter((item: any) => !item.id.startsWith("minicpm5-"));
+        },
+      }),
+    });
+    click("#settingsButton");
+    await flush(20);
+    expect($("#settingsSetup")).toBeTruthy();
+    click("#settingsSetup");
+    await flush(20);
+    // The full setup flow opens from Settings and the skip flag is cleared.
+    expect($(".onboarding")).toBeTruthy();
+    expect(bodyText()).toContain("Check this device");
+    expect(localStorage.getItem("veda:onboarding-skipped")).toBeNull();
   });
 });
