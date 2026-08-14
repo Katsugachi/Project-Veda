@@ -122,8 +122,19 @@ export const bridge = {
     }
   },
   ask: (request: AskRequest): Promise<AskResponse> => {
-    if (isTauri()) return call<AskResponse>("ask_veda", { request });
-    return mockAsk(request);
+    // The abort signal is a UI-side concern: it must not be serialised into
+    // the Tauri command payload.
+    const { signal, ...payload } = request;
+    if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+    const work = isTauri() ? call<AskResponse>("ask_veda", { request: payload }) : mockAsk(payload);
+    if (!signal) return work;
+    // Stopping is immediate for the user; the backend call is abandoned.
+    return Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      }),
+    ]);
   },
   readSource: async (url: string): Promise<ReaderSource> => {
     if (isTauri()) return call<ReaderSource>("read_source", { url });

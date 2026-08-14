@@ -1,7 +1,6 @@
 /* Deliberately restrained geometry: only small controls and status dots are circular. */
 [hidden] { display: none !important; }
 
-.side-spacer { flex: 1; }
 .side-bottom { display: block; padding: 10px 0 0; }
 .side-bottom .nav-item { width: 100%; }
 .sidebar-collapsed .side-bottom { display: block; padding-top: 10px; }
@@ -27,7 +26,6 @@
 .message-body pre,
 .resource-icon,
 .doc-icon,
-.download-file-icon,
 .check-icon { border-radius: 7px; }
 .resource-card,
 .doc-card,
@@ -35,7 +33,6 @@
 .preflight-row,
 .option-card,
 .setup-doc,
-.privacy-box,
 .toast,
 .popover { border-radius: 8px; }
 .onboarding,
@@ -44,85 +41,120 @@
 .tool-button { border-radius: 6px; }
 .doc-card:hover { transform: none; }
 .modal-backdrop { backdrop-filter: none; }
-.onboarding { box-shadow: 0 16px 42px rgba(0, 0, 0, .28); }
+.onboarding { box-shadow: var(--shadow-panel); }
 
 .library-summary { margin: -12px 0 14px; color: var(--muted); font-size: 10.5px; }
 .empty-list { padding: 30px; text-align: center; color: var(--muted); font-size: 12px; }
-.download-row { grid-template-columns: 38px minmax(180px, 1.3fr) minmax(140px, 1fr) 90px; }
+.download-row { grid-template-columns: minmax(180px, 1.3fr) minmax(140px, 1fr) 90px; }
 
 .setup-progress { margin-top: 34px; border: 1px solid var(--border); background: var(--bg); padding: 18px; border-radius: 8px; }
 .setup-progress-copy { margin-top: 12px; color: var(--text-soft); font-size: 11.5px; }
 .setup-error { color: var(--danger); white-space: pre-wrap; }
-.setup-backdrop { background: rgba(7, 9, 7, .78); }
+.setup-backdrop { background: var(--scrim-strong); }
 
 @media (max-width: 920px) {
-  .download-row { grid-template-columns: 38px 1fr 90px; }
-  .download-row > div:nth-child(3) { display: none; }
+  .download-row { grid-template-columns: 1fr 90px; }
+  .download-row > div:nth-child(2) { display: none; }
 }
 
-/* Restrained interaction motion: quick enough to feel responsive, never decorative. */
-body,
+/* ---------------------------------------------------------------------------
+   Motion.
+
+   The renderer morphs the DOM in place, so these elements survive across
+   state changes and their transitions genuinely interpolate instead of
+   snapping. Colour, border and shadow are transitioned; layout properties are
+   not, so nothing reflows mid-animation.
+
+   Deliberately NOT transitioned: `background-color` on <html>/<body> and the
+   theme variables themselves. Animating the page background is exactly what
+   produced the full-window flash when a control was pressed.
+   --------------------------------------------------------------------------- */
 .sidebar,
-.main,
 .topbar,
 .composer,
-.modal,
 .popover,
-.settings-card,
+.recent,
+.recent-wrap,
+.recent-more,
+.recent-menu-item,
 .doc-card,
 .option-card,
 .setup-doc,
-.icon-btn,
+.icon-button,
+.tool-button,
+.model-button,
+.scope-button,
+.send-button,
 .nav-item,
-.primary-btn,
-.secondary-btn,
+.source-chip,
+.attachment-chip,
+.settings-panel,
+.popover-item,
 .button {
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease,
-    box-shadow 180ms ease,
-    opacity 160ms ease,
-    transform 160ms ease;
+    background-color 180ms var(--ease),
+    border-color 180ms var(--ease),
+    color 140ms var(--ease),
+    box-shadow 200ms var(--ease),
+    opacity 160ms var(--ease),
+    transform 180ms var(--ease);
+  will-change: auto;
 }
 
+/* Presses read as a gentle depression rather than a jump. */
 .nav-item:active,
-.icon-btn:active,
-.primary-btn:active,
-.secondary-btn:active,
+.icon-button:active,
+.tool-button:active,
+.model-button:active,
+.scope-button:active,
+.recent:active,
 .button:active,
 .option-card:active,
-.setup-doc:active {
-  transform: translateY(1px) scale(0.99);
+.setup-doc:active,
+.source-chip:active {
+  transform: scale(0.985);
+  transition-duration: 90ms;
 }
 
-/* Entrance animations carry an `.entering` class that is applied exactly once
-   when a surface opens. Re-renders (step changes, progress updates, toggles)
-   never replay them, so clicks can't make the window flash. */
+.send-button:active:not(:disabled) {
+  transform: scale(0.94);
+  transition-duration: 90ms;
+}
+
+/* Entrance animations carry an `.entering` / `.enter` class applied exactly
+   once when a surface opens. Because the DOM is morphed rather than rebuilt,
+   unrelated re-renders no longer recreate these nodes, so the animations
+   cannot replay and the window cannot flash after a press. */
 .modal-backdrop.entering {
-  animation: veda-fade-in 160ms ease-out both;
+  animation: veda-fade-in 170ms var(--ease) both;
 }
 
-.modal.entering,
-.popover.entering {
-  animation: veda-rise-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+.modal-backdrop.entering > .settings-panel,
+.modal-backdrop.entering > .onboarding {
+  animation: veda-rise-in 210ms var(--ease) both;
+}
+
+/* Menus grow downwards out of their trigger. */
+.popover {
+  animation: veda-menu-in 150ms var(--ease) both;
+}
+
+.recent-menu {
+  animation: veda-menu-in 130ms var(--ease) both;
 }
 
 .onboarding-body.entering > * {
-  animation: veda-content-in 180ms ease-out both;
+  animation: veda-content-in 200ms var(--ease) both;
 }
 
 .doc-grid.enter > * {
-  animation: veda-content-in 180ms ease-out both;
+  animation: veda-content-in 200ms var(--ease) both;
 }
 
-.doc-grid.enter > *:nth-child(2) {
-  animation-delay: 20ms;
-}
-
-.doc-grid.enter > *:nth-child(3) {
-  animation-delay: 40ms;
-}
+.doc-grid.enter > *:nth-child(2) { animation-delay: 30ms; }
+.doc-grid.enter > *:nth-child(3) { animation-delay: 60ms; }
+.doc-grid.enter > *:nth-child(4) { animation-delay: 90ms; }
+.doc-grid.enter > *:nth-child(5) { animation-delay: 120ms; }
 
 @keyframes veda-fade-in {
   from { opacity: 0; }
@@ -130,12 +162,17 @@ body,
 }
 
 @keyframes veda-rise-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.995); }
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes veda-menu-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @keyframes veda-content-in {
-  from { opacity: 0; transform: translateY(3px); }
+  from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 

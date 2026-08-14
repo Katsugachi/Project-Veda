@@ -58,6 +58,10 @@ pub struct AskRequest {
     pub docsets: Vec<DocsetId>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Requested context window. `None` or `Some(0)` means "choose
+    /// automatically from this machine's memory".
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

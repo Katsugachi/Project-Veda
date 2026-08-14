@@ -74,6 +74,18 @@ export interface ChatMessage {
   sources?: SourceRef[];
   attachments?: Attachment[];
   streaming?: boolean;
+  /** Set when the user interrupted this reply. */
+  stopped?: boolean;
+  /** Set when the request failed, so the UI can offer a retry. */
+  failed?: boolean;
+}
+
+export interface Chat {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  messages: ChatMessage[];
 }
 
 export interface AskRequest {
@@ -82,6 +94,10 @@ export interface AskRequest {
   mode: ReasoningMode;
   docsets: string[];
   attachments: Attachment[];
+  /** 0 means "choose automatically from this machine's memory". */
+  contextTokens?: number;
+  /** Lets an in-flight local request be interrupted by the user. */
+  signal?: AbortSignal;
 }
 
 export interface AskResponse {

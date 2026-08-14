@@ -246,7 +246,8 @@ pub async fn ask_veda(
     } else {
         veda_core::ModelQuant::Q5
     };
-    let context = veda_core::context_budget(total_memory, quant).context_tokens;
+    // An explicit context choice from Settings wins; 0/absent means automatic.
+    let context = veda_core::resolve_context_tokens(request.context_tokens, total_memory, quant);
     let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
     let mut chat_sidecar = veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
