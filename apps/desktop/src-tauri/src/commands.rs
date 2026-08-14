@@ -236,7 +236,8 @@ pub async fn ask_veda(
             trace: None,
         });
     }
-    let total_memory = sysinfo::System::new_all().total_memory();
+    let mut system = sysinfo::System::new_all();
+    let available_memory = system.available_memory();
     let quant = if model
         .file_name()
         .and_then(|value| value.to_str())
@@ -246,9 +247,13 @@ pub async fn ask_veda(
     } else {
         veda_core::ModelQuant::Q5
     };
-    // An explicit context choice from Settings wins; 0/absent means automatic.
-    let context = veda_core::resolve_context_tokens(request.context_tokens, total_memory, quant);
-    let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
+    // An explicit context choice from Settings wins; 0/absent means automatic,
+    // which sizes the context to the memory that is actually free right now
+    // (available RAM, i.e. total minus what is already in use), leaving the
+    // 1.4 GB leeway so llama.cpp can never be asked to over-commit.
+    let context =
+        veda_core::resolve_context_tokens(request.context_tokens, available_memory, quant);
+    let threads = system.cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
     let mut chat_sidecar = veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
         executable: active.executable.clone(),

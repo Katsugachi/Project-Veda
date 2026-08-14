@@ -582,3 +582,100 @@ describe("Issue 14 — light → dark round trips leave nothing broken", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 });
+
+describe("Q5 default, Q8 gating and setup failures", () => {
+  it("defaults to Q5 on a fresh install", async () => {
+    await loadApp({ onboarded: false });
+    click("#setupNext");
+    await flush(20);
+    expect(bodyText()).toContain("Choose a model size");
+    expect($('[data-quant="q5"]')!.className).toContain("selected");
+    expect($('[data-quant="q8"]')!.className).not.toContain("selected");
+    // Nothing is persisted until the user actually makes a choice.
+    expect(localStorage.getItem("veda:quant")).toBeNull();
+  });
+
+  it("disables Q8 below the 12 GiB memory floor and explains why", async () => {
+    await loadApp({
+      onboarded: false,
+      bridge: (actual) => ({
+        ...actual,
+        preflight: async () => ({ ...(await actual.preflight()), totalMemoryBytes: 8 * 1024 ** 3 }),
+      }),
+    });
+    click("#setupNext");
+    await flush(20);
+    const q8 = $<HTMLButtonElement>('[data-quant="q8"]')!;
+    expect(q8.disabled).toBe(true);
+    expect(q8.getAttribute("aria-disabled")).toBe("true");
+    expect(bodyText()).toContain("Q8 requires 12 GB of physical memory");
+    // Clicking the disabled card must not change the selection.
+    q8.click();
+    await flush(20);
+    expect($('[data-quant="q5"]')!.className).toContain("selected");
+    expect($('[data-quant="q8"]')!.className).not.toContain("selected");
+  });
+
+  it("remembers the chosen model across restarts", async () => {
+    await loadApp({ onboarded: false });
+    click("#setupNext");
+    await flush(20);
+    click('[data-quant="q8"]');
+    await flush(20);
+    click("#setupNext");
+    await flush(20);
+    click("#setupNext");
+    await waitFor(() => !$(".onboarding"), 15000);
+    expect(localStorage.getItem("veda:quant")).toBe("q8");
+
+    // On restart the q8 model the setup downloaded is still on disk, so the
+    // stored choice is honoured.
+    const reloaded: any = await loadApp({
+      keepStorage: true,
+      bridge: (actual) => ({
+        ...actual,
+        downloads: async () => {
+          const items = await actual.downloads();
+          return items.some((item) => item.id === "minicpm5-q8")
+            ? items
+            : [
+                { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 },
+                ...items,
+              ];
+        },
+      }),
+    });
+    expect(reloaded.__test.state.selectedQuant).toBe("q8");
+  });
+
+  it("shows the setup failure with guidance and returns Back to the model step", async () => {
+    await loadApp({
+      onboarded: false,
+      bridge: (actual) => ({
+        ...actual,
+        prepareResources: () => Promise.reject(new Error("disk full")),
+      }),
+    });
+    click("#setupNext");
+    await flush(20);
+    click("#setupNext");
+    await flush(20);
+    click("#setupNext");
+    await waitFor(() => bodyText().includes("Something went wrong"), 6000);
+    expect(bodyText()).toContain("disk full");
+    expect(bodyText()).toContain("retrying resumes where it stopped");
+    // Back returns to the step that failed (the model choice), not the end.
+    click("#setupCancelError");
+    await flush(20);
+    expect(bodyText()).toContain("Choose a model size");
+    expect($('[data-quant="q5"]')!.className).toContain("selected");
+  });
+
+  it("reports the device-sized automatic context in Settings", async () => {
+    await loadApp();
+    click("#settingsButton");
+    await flush(20);
+    expect($("#contextDetail")!.textContent).toContain("Automatic");
+    expect($("#contextDetail")!.textContent).toContain("131,072 on this device");
+  });
+});

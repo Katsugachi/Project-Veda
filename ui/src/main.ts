@@ -22,6 +22,11 @@ import type {
 // Context is user-configurable from 0 (automatic) up to MiniCPM 5's ceiling.
 const CONTEXT_MAX = 131_072;
 const CONTEXT_STEP = 1_024;
+const GIB_BYTES = 1024 ** 3;
+
+// The backend refuses to prepare Q8 below this floor, so the option is
+// disabled up front instead of failing later with "Something went wrong".
+const Q8_MEMORY_FLOOR_BYTES = 12 * GIB_BYTES;
 
 type AppState = {
   view: View;
@@ -36,6 +41,8 @@ type AppState = {
   setupStep: number;
   setupRunning: boolean;
   setupError?: string;
+  /** The onboarding step to return to after a failed setup ("Back"). */
+  setupFailureStep: number;
   setupStatus: string;
   setupProgress: number;
   selectedQuant: "q5" | "q8";
@@ -123,6 +130,7 @@ const state: AppState = {
   setupRunning: false,
   setupStatus: "Preparing setup…",
   setupProgress: 0,
+  setupFailureStep: 1,
   selectedQuant: "q5",
   setupDocsets: new Set(["python"]),
   mode: (migrated("mode") as ReasoningMode | null) === "think" ? "think" : "fast",
@@ -158,6 +166,15 @@ const isBusy = (chatId = state.activeChatId): boolean => pending.has(chatId);
 
 function isDocInstalled(doc: Docset): boolean {
   return doc.state === "installed" || doc.state === "updateAvailable";
+}
+
+// Q8 needs a 12 GiB machine (the same floor the backend enforces before it
+// will download the larger model). When the preflight knows the device cannot
+// run it, the choice is disabled up front — a clear reason instead of a late
+// "Something went wrong" during setup.
+function q8Supported(): boolean {
+  const total = state.preflight?.totalMemoryBytes;
+  return total === undefined || total >= Q8_MEMORY_FLOOR_BYTES;
 }
 
 const contextLabel = (value: number): string =>
@@ -485,7 +502,9 @@ function checkRow(kind: "memory" | "drive" | "chip", name: string, detail: strin
 function renderOnboardingBody(): string {
   const report = state.preflight;
   if (state.setupError) {
-    return `<div class="onboarding-kicker">Setup stopped</div><h1>Something went wrong</h1><p class="onboarding-lead setup-error">${escapeHtml(state.setupError)}</p>`;
+    return `<div class="onboarding-kicker">Setup stopped</div><h1>Something went wrong</h1>
+      <p class="onboarding-lead">The download or import stopped before it finished. Files already downloaded are kept, so retrying resumes where it stopped. You can also go back and choose a smaller model or fewer documentation packs.</p>
+      <p class="onboarding-lead setup-error">${escapeHtml(state.setupError)}</p>`;
   }
   if (state.setupRunning) {
     return `<div class="onboarding-kicker">Setup</div><h1>Preparing Veda</h1><p class="onboarding-lead">Keep Veda open until setup finishes.</p>
@@ -503,11 +522,16 @@ function renderOnboardingBody(): string {
       </div>`;
   }
   if (state.setupStep === 1) {
-    return `<div class="onboarding-kicker">MiniCPM 5</div><h1>Choose a model size</h1><p class="onboarding-lead">Q5 is suitable for most devices. Q8 uses more memory and provides slightly higher fidelity.</p>
+    const q8Disabled = !q8Supported();
+    const totalGiB = state.preflight ? `${Math.round(state.preflight.totalMemoryBytes / GIB_BYTES)} GB` : "this device";
+    const card = (quant: "q5" | "q8", name: string, detail: string, meta: string[], disabled: boolean) =>
+      `<button class="option-card${state.selectedQuant === quant ? " selected" : ""}" data-quant="${quant}" ${disabled ? 'disabled aria-disabled="true"' : ""}><div class="option-name">${name}</div><div class="option-detail">${detail}</div><div class="option-meta">${meta.map((tag) => `<span class="meta-tag">${tag}</span>`).join("")}${disabled ? '<span class="meta-tag">Not available</span>' : ""}</div></button>`;
+    return `<div class="onboarding-kicker">MiniCPM 5</div><h1>Choose a model size</h1><p class="onboarding-lead">Q5 is the default on every device. Q8 uses more memory and provides slightly higher fidelity.</p>
       <div class="option-grid">
-        <button class="option-card${state.selectedQuant === "q5" ? " selected" : ""}" data-quant="q5"><div class="option-name">Q5</div><div class="option-detail">Uses less memory.</div><div class="option-meta"><span class="meta-tag">751 MiB</span><span class="meta-tag">8 GB RAM</span></div></button>
-        <button class="option-card${state.selectedQuant === "q8" ? " selected" : ""}" data-quant="q8"><div class="option-name">Q8</div><div class="option-detail">Uses more memory.</div><div class="option-meta"><span class="meta-tag">1.07 GiB</span><span class="meta-tag">12 GB RAM</span></div></button>
-      </div>`;
+        ${card("q5", "Q5", "Uses less memory · the default choice.", ["751 MiB", "6 GB RAM"], false)}
+        ${card("q8", "Q8", q8Disabled ? "Needs 12 GB of RAM to run." : "Uses more memory.", ["1.07 GiB", "12 GB RAM"], q8Disabled)}
+      </div>
+      ${q8Disabled ? `<p class="option-note">Q8 requires 12 GB of physical memory; ${totalGiB} is not enough, so it is disabled. Q5 is selected automatically.</p>` : ""}`;
   }
   const total = state.docsets.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
   return `<div class="onboarding-kicker">Documentation</div><h1>Choose documentation</h1><p class="onboarding-lead">Download only what you need. You can change this later.</p>
@@ -821,6 +845,7 @@ async function installDocsetBlocking(id: string): Promise<void> {
   } catch (error) {
     state.setupError = errorText(error);
     state.setupRunning = false;
+    state.setupFailureStep = 2;
     render();
   }
 }
@@ -865,9 +890,11 @@ async function runSetup(): Promise<void> {
   state.setupError = undefined;
   state.setupProgress = 0;
   state.setupStatus = "Preparing model files…";
+  let modelPrepared = false;
   render();
   try {
     await bridge.prepareResources(state.selectedQuant);
+    modelPrepared = true;
     for (const id of state.setupDocsets) {
       const doc = state.docsets.find((item) => item.id === id);
       if (doc?.state === "installed") continue;
@@ -883,6 +910,10 @@ async function runSetup(): Promise<void> {
   } catch (error) {
     state.setupError = errorText(error);
     state.setupRunning = false;
+    // "Back" from the error screen returns to the step that actually failed:
+    // the model choice when resources could not be prepared, otherwise the
+    // documentation step.
+    state.setupFailureStep = modelPrepared ? 2 : 1;
     render();
   }
 }
@@ -1095,7 +1126,10 @@ function bindGlobalEvents(): void {
     }
     const quant = closest(target, "[data-quant]");
     if (quant) {
+      // A disabled card (Q8 below the 12 GiB floor) is not a choice.
+      if (quant.hasAttribute("disabled")) return;
       state.selectedQuant = quant.dataset.quant as "q5" | "q8";
+      storageSet("veda:quant", state.selectedQuant);
       render();
       return;
     }
@@ -1206,6 +1240,10 @@ function bindGlobalEvents(): void {
         render();
         return;
       case "setupNext":
+        if (state.setupStep === 1 && state.selectedQuant === "q8" && !q8Supported()) {
+          state.selectedQuant = "q5";
+          storageSet("veda:quant", "q5");
+        }
         if (state.setupStep < 2) {
           state.setupStep += 1;
           render();
@@ -1218,7 +1256,9 @@ function bindGlobalEvents(): void {
       case "setupCancelError":
         state.setupError = undefined;
         state.setupRunning = false;
-        state.setupStep = 2;
+        // Return to the step that failed so the user can change the model or
+        // the documentation selection instead of being bounced to the end.
+        state.setupStep = Math.min(2, Math.max(1, state.setupFailureStep));
         render();
         return;
       default:
@@ -1342,11 +1382,23 @@ async function init(): Promise<void> {
   else state.downloadsError = errorText(downloadsResult.reason);
 
   const downloads = state.downloads;
-  state.selectedQuant = downloads.some((item) => item.id === "minicpm5-q8" && item.state === "installed")
-    ? "q8"
-    : downloads.some((item) => item.id === "minicpm5-q5" && item.state === "installed")
-      ? "q5"
-      : (state.preflight?.recommendedQuant ?? "q5");
+  const installedModel = (quant: string): boolean =>
+    downloads.some((item) => item.id === `minicpm5-${quant}` && item.state === "installed");
+  const storedQuant = migrated("quant");
+  // A previously chosen model wins when it is still installed; otherwise the
+  // installed model is shown; otherwise Q5, the default on every device.
+  state.selectedQuant =
+    (storedQuant === "q5" || storedQuant === "q8") && installedModel(storedQuant)
+      ? storedQuant
+      : installedModel("q8")
+        ? "q8"
+        : installedModel("q5")
+          ? "q5"
+          : (state.preflight?.recommendedQuant ?? "q5");
+  if (state.selectedQuant === "q8" && !q8Supported()) {
+    state.selectedQuant = "q5";
+    storageSet("veda:quant", "q5");
+  }
 
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
   const docsReady = state.docsets.some(isDocInstalled);

@@ -49,3 +49,29 @@ automatic, explicit, over-max and under-min requests. The Rust toolchain cannot
 be installed in this sandbox, so those tests are written but not executed here;
 `AskRequest.context_tokens` is `#[serde(default)] Option<u32>`, so the change is
 backwards compatible with any client that omits the field.
+
+---
+
+## Round 2 — model default, setup failures and the automatic context
+
+| # | Symptom | Root cause | Fix | Verified by |
+|---|---------|-----------|-----|-------------|
+| 15 | Q8 was preselected on machines with ≥ 12 GiB RAM | `preflight.recommended_quant` picked Q8 whenever total RAM reached 12 GiB | Q5 is the default on every device: `recommended_quant` is now always Q5, the mock/preflight fixtures say `q5`, and the model step copy states it. A user-chosen quant is persisted (`veda:quant`) and honoured on restart when the model is still installed | `regression.test.ts` ("defaults to Q5…", "remembers the chosen model…") |
+| 16 | Setup landed on a dead-end "Something went wrong" | Q8 was selectable below its 12 GiB floor, so `prepare_resources` failed late with a raw memory error and "Back" bounced to the wrong step | Q8 is disabled (with a reason) below the 12 GiB floor; the error screen explains that downloads resume on retry; "Back" returns to the step that actually failed | `regression.test.ts` ("disables Q8 below…", "shows the setup failure…") |
+| 17 | Automatic context ignored how much RAM was actually free | `context_budget` keyed off **total** RAM with a coarse 4K/8K/16K/32K ladder | The automatic context is now the largest whole 1K step whose KV cache fits in **available** RAM (total minus what other apps are using) after reserving the model and a 1.4 GB leeway, capped at the 131K ceiling. `ask_veda` and the preflight both use `available_memory_bytes` | Rust unit tests in `context.rs`/`preflight.rs` (formula + clamping); `regression.test.ts` ("reports the device-sized automatic context…") |
+
+### Result
+
+```
+tsc --noEmit      clean
+vitest run        94 passed (94)
+vite build        built in 339ms
+```
+
+Rust: `context_budget`/`resolve_context_tokens` were reworked and re-tested
+(exact-value checks for the leeway formula, monotonic growth, floor/ceiling
+clamping); `preflight` now always recommends Q5 and sizes the context from
+available memory. As before, the Rust toolchain cannot be installed in this
+sandbox, so the Rust tests are written but executed by CI (`cargo test
+--workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo
+fmt --all -- --check`).
