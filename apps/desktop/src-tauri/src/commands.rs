@@ -319,9 +319,7 @@ pub async fn ask_veda(
 /// change in the model store never strands an ask.
 fn model_files(preferred: Option<veda_core::ModelQuant>) -> [&'static str; 2] {
     match preferred {
-        Some(veda_core::ModelQuant::Q8) => {
-            ["minicpm5-1b-Q8_0.gguf", "minicpm5-1b-Q5_K_M.gguf"]
-        }
+        Some(veda_core::ModelQuant::Q8) => ["minicpm5-1b-Q8_0.gguf", "minicpm5-1b-Q5_K_M.gguf"],
         _ => ["minicpm5-1b-Q5_K_M.gguf", "minicpm5-1b-Q8_0.gguf"],
     }
 }

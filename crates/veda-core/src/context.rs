@@ -115,9 +115,15 @@ mod tests {
         // 4 GiB available with Q8: 1.4 GB leeway + 1.75 GB model leave
         // 1.07 GiB for the KV cache, which is 74,542 raw tokens rounded down
         // to the 1K step (73,728).
-        assert_eq!(context_budget(4 * GIB, ModelQuant::Q8).context_tokens, 73_728);
+        assert_eq!(
+            context_budget(4 * GIB, ModelQuant::Q8).context_tokens,
+            73_728
+        );
         // A machine with less free memory gets a smaller context…
-        assert_eq!(context_budget(3 * GIB, ModelQuant::Q5).context_tokens, 33_792);
+        assert_eq!(
+            context_budget(3 * GIB, ModelQuant::Q5).context_tokens,
+            33_792
+        );
         // …and once RAM is plentiful the ceiling is the model's 131K max.
         assert_eq!(
             context_budget(16 * GIB, ModelQuant::Q5).context_tokens,
