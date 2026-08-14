@@ -27,8 +27,8 @@ const browserPreflight: PreflightReport = {
   diskKind: "ssd",
   architecture: "arm64",
   operatingSystem: "Browser preview",
-  recommendedQuant: "q8",
-  recommendedContext: 16384,
+  recommendedQuant: "q5",
+  recommendedContext: 131072,
   hardFailures: [],
   warnings: ["This is a browser preview. Download the Veda desktop app to install local resources on this device."],
 };
@@ -42,7 +42,7 @@ const browserDocsets: Docset[] = [
 ];
 
 const browserDownloads: DownloadItem[] = [
-  { id: "minicpm5-q8", name: "MiniCPM 5 · Q8", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 1_153_529_261, totalBytes: 1_153_529_261 },
+  { id: "minicpm5-q5", name: "MiniCPM 5 · Q5", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 786_862_688, totalBytes: 786_862_688 },
   { id: "bge-small-q8", name: "Offline search support", detail: "Ready", state: "installed", progress: 100, downloadedBytes: 36_806_944, totalBytes: 36_806_944 },
   { id: "python-source-3.14.7", name: "Python 3.14.7", detail: "571 pages indexed", state: "installed", progress: 100, downloadedBytes: 16_737_282, totalBytes: 16_737_282 },
   { id: "cppreference-source-20250209", name: "cppreference", detail: "6,640 pages indexed", state: "installed", progress: 100, downloadedBytes: 55_740_889, totalBytes: 55_740_889 },

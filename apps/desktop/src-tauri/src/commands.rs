@@ -209,7 +209,7 @@ pub async fn ask_veda(
     request: AskRequest,
     state: State<'_, AppState>,
 ) -> Result<AskResponse, String> {
-    let model = ["minicpm5-1b-Q8_0.gguf", "minicpm5-1b-Q5_K_M.gguf"]
+    let model = model_files(request.model_quant)
         .iter()
         .map(|file| state.data_dir.join("models").join(file))
         .find(|path| path.exists());
@@ -236,7 +236,9 @@ pub async fn ask_veda(
             trace: None,
         });
     }
-    let total_memory = sysinfo::System::new_all().total_memory();
+    let mut system = sysinfo::System::new_all();
+    system.refresh_memory();
+    let available_memory = system.available_memory();
     let quant = if model
         .file_name()
         .and_then(|value| value.to_str())
@@ -246,9 +248,13 @@ pub async fn ask_veda(
     } else {
         veda_core::ModelQuant::Q5
     };
-    // An explicit context choice from Settings wins; 0/absent means automatic.
-    let context = veda_core::resolve_context_tokens(request.context_tokens, total_memory, quant);
-    let threads = sysinfo::System::new_all().cpus().len().clamp(1, 16);
+    // An explicit context choice from Settings wins; 0/absent means automatic,
+    // which sizes the context to the memory that is actually free right now
+    // (available RAM, i.e. total minus what is already in use), leaving the
+    // 1.4 GB leeway so llama.cpp can never be asked to over-commit.
+    let context =
+        veda_core::resolve_context_tokens(request.context_tokens, available_memory, quant);
+    let threads = system.cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
     let mut chat_sidecar = veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
         executable: active.executable.clone(),
@@ -305,6 +311,17 @@ pub async fn ask_veda(
     let _ = embedding_sidecar.stop().await;
     let _ = chat_sidecar.stop().await;
     result
+}
+
+/// The on-disk chat model candidates, with the quant the UI is configured
+/// for first so the loaded model always matches what Settings reports. When
+/// the preferred file is missing the other installed model is used, so a
+/// change in the model store never strands an ask.
+fn model_files(preferred: Option<veda_core::ModelQuant>) -> [&'static str; 2] {
+    match preferred {
+        Some(veda_core::ModelQuant::Q8) => ["minicpm5-1b-Q8_0.gguf", "minicpm5-1b-Q5_K_M.gguf"],
+        _ => ["minicpm5-1b-Q5_K_M.gguf", "minicpm5-1b-Q8_0.gguf"],
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -531,4 +548,28 @@ fn docsets() -> Vec<Docset> {
 #[allow(dead_code)]
 fn is_safe_child(root: &Path, child: &Path) -> bool {
     child.starts_with(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_files_put_the_requested_quant_first() {
+        assert_eq!(
+            model_files(Some(veda_core::ModelQuant::Q8))[0],
+            "minicpm5-1b-Q8_0.gguf"
+        );
+        assert_eq!(
+            model_files(Some(veda_core::ModelQuant::Q5))[0],
+            "minicpm5-1b-Q5_K_M.gguf"
+        );
+        // Unknown/absent preference defaults to the Q5 file, the app default.
+        assert_eq!(model_files(None)[0], "minicpm5-1b-Q5_K_M.gguf");
+        // Both candidates are always present so a missing file falls back.
+        assert_eq!(
+            model_files(Some(veda_core::ModelQuant::Q5))[1],
+            "minicpm5-1b-Q8_0.gguf"
+        );
+    }
 }

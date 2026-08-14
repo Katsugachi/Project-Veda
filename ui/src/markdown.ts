@@ -13,9 +13,11 @@ function inline(value: string): string {
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
   rendered = rendered.replace(/\[(S\d+)\]/g, '<strong class="source-n">[$1]</strong>');
-  rendered = rendered.replace(
-    /\[([^\]]+)\]\(([^)\s]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+  // Links may only point at safe external schemes. Assistant text and the
+  // retrieved documentation it quotes are untrusted, so `javascript:` and
+  // other dangerous schemes are dropped instead of becoming clickable.
+  rendered = rendered.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, url: string) =>
+    /^(https?:|mailto:)/i.test(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : match,
   );
   return rendered;
 }

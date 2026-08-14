@@ -20,9 +20,9 @@ Setup does not download resources unless all hard requirements pass:
 
 - **10 GiB free disk space**. Windows checks this in the NSIS pre-install hook and every platform checks again before setup.
 - SSD strongly recommended; an HDD or unknown drive produces a warning.
-- **Q5:** 6 GiB hard memory floor, 8 GiB recommended.
-- **Q8:** 12 GiB memory floor.
-- Context is selected conservatively from total RAM: 4K, 8K, 16K or 32K. Veda never allocates MiniCPM's advertised maximum context blindly.
+- **Q5:** 6 GiB hard memory floor, 8 GiB recommended. Q5 is the default model on every device.
+- **Q8:** 12 GiB memory floor. The setup screen disables Q8 on machines below the floor so setup cannot fail later.
+- Automatic context is sized to the memory that is **actually available right now** (total RAM minus what other apps are using), with a 1.4 GB safety margin reserved for the OS and other applications. It picks the largest context whose KV cache fits in the remaining RAM, capped at MiniCPM's 131K ceiling. The explicit setting in Settings overrides it.
 
 ## Pinned model assets
 
@@ -30,7 +30,7 @@ The UI calls both choices **MiniCPM 5**.
 
 | Choice | File | Bytes | SHA-256 |
 |---|---|---:|---|
-| Q5, default on smaller machines | `minicpm5-1b-Q5_K_M.gguf` | 786,862,688 | `a9408d2e911e3b29ef40a7d9bf5d25e480d770733e30958df018c7be65a77e30` |
+| Q5, default | `minicpm5-1b-Q5_K_M.gguf` | 786,862,688 | `a9408d2e911e3b29ef40a7d9bf5d25e480d770733e30958df018c7be65a77e30` |
 | Q8 | `minicpm5-1b-Q8_0.gguf` | 1,153,529,261 | `60b7e21be12abb44725e18ff4feecfbba53e216e8ea52e49112c40252a839f5d` |
 
 Q5 uses the supplied URL:

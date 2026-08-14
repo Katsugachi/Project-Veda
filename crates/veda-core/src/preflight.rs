@@ -60,12 +60,14 @@ pub fn evaluate_preflight(snapshot: HardwareSnapshot) -> PreflightReport {
         warnings.push("Less than 3 GiB of memory is currently available; close other apps before loading the model.".into());
     }
 
-    let recommended_quant = if snapshot.total_memory_bytes >= 12 * GIB {
-        ModelQuant::Q8
-    } else {
-        ModelQuant::Q5
-    };
-    let budget = context_budget(snapshot.total_memory_bytes, recommended_quant);
+    // Q5 is the default model on every device. Q8 remains available as an
+    // explicit choice, gated in the UI on the 12 GiB memory floor the
+    // backend enforces before it will download the larger model.
+    let recommended_quant = ModelQuant::Q5;
+    // The automatic context is sized from the memory that is actually
+    // available (total RAM minus what is already in use), not the sticker
+    // amount, with the 1.4 GB leeway reserved by `context_budget`.
+    let budget = context_budget(snapshot.available_memory_bytes, recommended_quant);
     PreflightReport {
         total_memory_bytes: snapshot.total_memory_bytes,
         available_memory_bytes: snapshot.available_memory_bytes,
@@ -102,14 +104,30 @@ mod tests {
     }
 
     #[test]
-    fn q8_requires_twelve_gib() {
+    fn q5_is_the_default_on_every_device() {
         assert_eq!(
             evaluate_preflight(snapshot(8 * GIB, 20 * GIB)).recommended_quant,
             ModelQuant::Q5
         );
         assert_eq!(
             evaluate_preflight(snapshot(16 * GIB, 20 * GIB)).recommended_quant,
-            ModelQuant::Q8
+            ModelQuant::Q5
+        );
+    }
+
+    #[test]
+    fn recommended_context_uses_available_memory() {
+        // The fixture halves the snapshot's total to simulate used RAM; the
+        // recommended context must follow the *available* figure: 4 GiB
+        // available minus the 1.4 GB leeway and the 1.3 GB Q5 model leaves
+        // room for 103,839 raw tokens, rounded down to the 1K step.
+        assert_eq!(
+            evaluate_preflight(snapshot(8 * GIB, 20 * GIB)).recommended_context,
+            103_424
+        );
+        assert_eq!(
+            evaluate_preflight(snapshot(16 * GIB, 20 * GIB)).recommended_context,
+            crate::context::CONTEXT_TOKENS_MAX
         );
     }
 }

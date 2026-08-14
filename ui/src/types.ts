@@ -96,6 +96,9 @@ export interface AskRequest {
   attachments: Attachment[];
   /** 0 means "choose automatically from this machine's memory". */
   contextTokens?: number;
+  /** The model quantization the UI is configured for; the backend loads the
+   *  matching model file when it is installed. */
+  modelQuant?: "q5" | "q8";
   /** Lets an in-flight local request be interrupted by the user. */
   signal?: AbortSignal;
 }

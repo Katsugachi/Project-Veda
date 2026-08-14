@@ -83,6 +83,41 @@ pub struct LlamaSidecar {
 
 impl LlamaSidecar {
     pub async fn spawn(config: SidecarConfig) -> Result<Self, SidecarError> {
+        // Two chats can ask at once and each spawns its own llama.cpp
+        // sidecar. The OS hands out the probe port before the child binds it,
+        // so a collision between two concurrent spawns is possible; retry on
+        // a fresh port a couple of times before surfacing the error.
+        let mut attempts = 0_u32;
+        loop {
+            match Self::spawn_once(config.clone()).await {
+                Ok(sidecar) => return Ok(sidecar),
+                Err(error) if attempts < 2 && is_bind_collision(&error) => {
+                    attempts += 1;
+                    tracing::warn!(
+                        %error,
+                        attempts,
+                        "llama.cpp port collision; retrying on a new port"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+/// True when llama.cpp failed because another process (usually a second
+/// sidecar spawned concurrently) already owns the chosen port. Detected from
+/// the captured log tail so the retry only fires for actual collisions.
+fn is_bind_collision(error: &SidecarError) -> bool {
+    let SidecarError::EarlyExit { log, .. } = error else {
+        return false;
+    };
+    let log = log.to_ascii_lowercase();
+    log.contains("address already in use") || log.contains("wsaeaddrinuse") || log.contains("10048")
+}
+
+impl LlamaSidecar {
+    async fn spawn_once(config: SidecarConfig) -> Result<Self, SidecarError> {
         let port = free_port()?;
         let api_key = format!("veda-{}", Uuid::new_v4());
         let mut command = Command::new(&config.executable);
@@ -196,5 +231,38 @@ impl SidecarError {
         } else {
             format!("\nllama.cpp output:\n{log}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bind_collision_is_detected_from_the_log_tail() {
+        let posix = SidecarError::EarlyExit {
+            status: "exit status: 1".into(),
+            log: "llama_server: error: bind() failed: Address already in use".into(),
+        };
+        assert!(is_bind_collision(&posix));
+
+        let winsock = SidecarError::EarlyExit {
+            status: "exit status: 1".into(),
+            log: "llama_server: error: bind() failed with error 10048".into(),
+        };
+        assert!(is_bind_collision(&winsock));
+
+        let unrelated = SidecarError::EarlyExit {
+            status: "exit status: 1".into(),
+            log: "llama_model_load: error loading model".into(),
+        };
+        assert!(!is_bind_collision(&unrelated));
+
+        // A bind failure that outlived the retry window is a health timeout,
+        // which must not be retried a second time by the caller's loop.
+        let timeout = SidecarError::HealthTimeout {
+            log: "llama.cpp output:\nbind() failed: Address already in use".into(),
+        };
+        assert!(!is_bind_collision(&timeout));
     }
 }
