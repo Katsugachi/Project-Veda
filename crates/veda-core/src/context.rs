@@ -1,6 +1,10 @@
 use crate::ModelQuant;
 use serde::{Deserialize, Serialize};
 
+/// Only the unit tests below need GiB-based inputs; the production code
+/// works directly in bytes, so the constant is test-scoped to keep clippy's
+/// `-D warnings` (dead_code) happy.
+#[cfg(test)]
 const GIB: u64 = 1024 * 1024 * 1024;
 
 /// Safety margin kept free on top of whatever other applications are already
