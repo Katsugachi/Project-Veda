@@ -1,10 +1,27 @@
 import "./styles.css";
 import "./shape-overrides.css";
 import { bridge } from "./bridge";
+import { createChat, deriveTitle, groupChats, loadChats, newId, saveChats } from "./chats";
+import { morph } from "./dom";
 import { bytes, timeLabel } from "./format";
 import { icon, logo } from "./icons";
 import { escapeHtml, renderMarkdown } from "./markdown";
-import type { Attachment, ChatMessage, Docset, DownloadItem, PreflightReport, ReaderSource, ReasoningMode, Theme, View } from "./types";
+import type {
+  Attachment,
+  Chat,
+  ChatMessage,
+  Docset,
+  DownloadItem,
+  PreflightReport,
+  ReaderSource,
+  ReasoningMode,
+  Theme,
+  View,
+} from "./types";
+
+// Context is user-configurable from 0 (automatic) up to MiniCPM 5's ceiling.
+const CONTEXT_MAX = 131_072;
+const CONTEXT_STEP = 1_024;
 
 type AppState = {
   view: View;
@@ -12,7 +29,9 @@ type AppState = {
   sidebarCollapsed: boolean;
   settingsOpen: boolean;
   reader?: ReaderSource;
+  readerLoading: boolean;
   modelOpen: boolean;
+  scopeOpen: boolean;
   onboardingOpen: boolean;
   setupStep: number;
   setupRunning: boolean;
@@ -22,13 +41,18 @@ type AppState = {
   selectedQuant: "q5" | "q8";
   setupDocsets: Set<string>;
   mode: ReasoningMode;
+  contextTokens: number;
   preflight?: PreflightReport;
   docsets: Docset[];
+  docsetsError?: string;
   downloads: DownloadItem[];
-  messages: ChatMessage[];
+  downloadsError?: string;
+  chats: Chat[];
+  activeChatId: string;
+  renamingChatId?: string;
+  menuChatId?: string;
   attachments: Attachment[];
-  busy: boolean;
-  toasts: string[];
+  toasts: { id: string; text: string }[];
 };
 
 // Storage access is defensive: some embedded webviews block localStorage and
@@ -74,12 +98,26 @@ function errorText(error: unknown): string {
   return cleaned || raw;
 }
 
+const isAbort = (error: unknown): boolean =>
+  error instanceof DOMException ? error.name === "AbortError" : (error as Error)?.name === "AbortError";
+
+function readContextSetting(): number {
+  const raw = Number(migrated("context"));
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.min(CONTEXT_MAX, Math.round(raw));
+}
+
+const storedChats = loadChats();
+const firstChat = storedChats[0] ?? createChat();
+
 const state: AppState = {
   view: "chat",
-  theme: (migrated("theme") as Theme | null) ?? "dark",
+  theme: (migrated("theme") as Theme | null) === "light" ? "light" : "dark",
   sidebarCollapsed: migrated("sidebar") === "collapsed",
   settingsOpen: false,
+  readerLoading: false,
   modelOpen: false,
+  scopeOpen: false,
   onboardingOpen: migrated("onboarded") !== "true",
   setupStep: 0,
   setupRunning: false,
@@ -87,12 +125,13 @@ const state: AppState = {
   setupProgress: 0,
   selectedQuant: "q5",
   setupDocsets: new Set(["python"]),
-  mode: "fast",
+  mode: (migrated("mode") as ReasoningMode | null) === "think" ? "think" : "fast",
+  contextTokens: readContextSetting(),
   docsets: [],
   downloads: [],
-  messages: [],
+  chats: storedChats.length ? storedChats : [firstChat],
+  activeChatId: firstChat.id,
   attachments: [],
-  busy: false,
   toasts: [],
 };
 
@@ -102,18 +141,75 @@ const app: HTMLDivElement = mount;
 
 document.documentElement.dataset.theme = state.theme;
 
+// ---------------------------------------------------------------------------
+// In-flight requests.
+//
+// A request belongs to a chat, not to the rendered view. The reply is written
+// back into the chat store when it lands, so answers still arrive while the
+// user is on Docs or Downloads, or reading another conversation.
+// ---------------------------------------------------------------------------
+type Pending = { chatId: string; messageId: string; controller: AbortController };
+const pending = new Map<string, Pending>();
+
+const activeChat = (): Chat =>
+  state.chats.find((chat) => chat.id === state.activeChatId) ?? state.chats[0];
+
+const isBusy = (chatId = state.activeChatId): boolean => pending.has(chatId);
+
 function isDocInstalled(doc: Docset): boolean {
   return doc.state === "installed" || doc.state === "updateAvailable";
 }
 
+const contextLabel = (value: number): string =>
+  value <= 0 ? "Automatic" : `${value.toLocaleString()} tokens`;
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
 function navItem(view: View, label: string, iconName: "chat" | "book" | "download", badge?: number): string {
   const active = state.view === view ? " active" : "";
-  return `<button class="nav-item${active}" data-view="${view}" title="${label}">${icon(iconName)}<span class="nav-label">${label}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
+  return `<button class="nav-item${active}" data-key="nav-${view}" data-view="${view}" title="${label}">${icon(iconName)}<span class="nav-label">${label}</span>${badge ? `<span class="badge">${badge}</span>` : ""}</button>`;
+}
+
+function renderChatRow(chat: Chat): string {
+  const active = chat.id === state.activeChatId && state.view === "chat" ? " active" : "";
+  if (state.renamingChatId === chat.id) {
+    return `<div class="recent renaming" data-key="chat-${chat.id}">
+      <input class="recent-input" id="renameInput" data-rename="${escapeHtml(chat.id)}" value="${escapeHtml(chat.title)}" aria-label="Rename chat" />
+    </div>`;
+  }
+  const menuOpen = state.menuChatId === chat.id;
+  return `<div class="recent-wrap${menuOpen ? " menu-open" : ""}" data-key="chat-${chat.id}">
+    <button class="recent${active}" data-chat="${escapeHtml(chat.id)}" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</button>
+    <button class="recent-more" data-chat-menu="${escapeHtml(chat.id)}" aria-label="Chat options for ${escapeHtml(chat.title)}" aria-expanded="${menuOpen}">⋯</button>
+    ${menuOpen ? `<div class="recent-menu" role="menu">
+      <button class="recent-menu-item" data-chat-rename="${escapeHtml(chat.id)}" role="menuitem">${icon("pencil")} Rename</button>
+      <button class="recent-menu-item danger" data-chat-delete="${escapeHtml(chat.id)}" role="menuitem">${icon("trash")} Delete</button>
+    </div>` : ""}
+  </div>`;
+}
+
+function renderHistory(): string {
+  const groups = groupChats(state.chats.filter((chat) => chat.messages.length > 0));
+  if (!groups.length) {
+    return `<div class="recent-area"><div class="recents-empty">Your chats appear here.</div></div>`;
+  }
+  return `<div class="recent-area">
+    <div class="recents">${groups
+      .map(
+        (group) => `<div class="recent-group" data-key="group-${group.label}">
+          <div class="section-label">${group.label}</div>
+          ${group.chats.map(renderChatRow).join("")}
+        </div>`,
+      )
+      .join("")}</div>
+  </div>`;
 }
 
 function renderSidebar(): string {
   const activeDownloads = state.downloads.filter((item) => item.state === "downloading" || item.state === "indexing").length;
-  return `<aside class="sidebar">
+  return `<aside class="sidebar" data-key="sidebar">
     <div class="side-top">
       <button class="wordmark" id="wordmark" title="${state.sidebarCollapsed ? "Expand sidebar" : "Veda"}" aria-label="${state.sidebarCollapsed ? "Expand sidebar" : "Veda"}">${logo()}<span class="wordmark-label">Veda</span></button>
       <button class="icon-button" id="collapseSidebar" title="Collapse sidebar" aria-label="Collapse sidebar">${icon("panel")}</button>
@@ -124,7 +220,7 @@ function renderSidebar(): string {
       ${navItem("docs", "Docs", "book")}
       ${navItem("downloads", "Downloads", "download", activeDownloads)}
     </nav>
-    <div class="side-spacer"></div>
+    ${renderHistory()}
     <div class="side-bottom">
       <button class="nav-item" id="settingsButton" title="Settings">${icon("settings")}<span class="nav-label">Settings</span></button>
     </div>
@@ -132,58 +228,102 @@ function renderSidebar(): string {
 }
 
 function renderTopbar(): string {
-  const title = state.view === "chat" ? (state.messages.length ? "Documentation chat" : "New chat") : state.view === "docs" ? "Documentation library" : "Downloads & storage";
-  return `<header class="topbar">
-    <div class="page-title">${title}</div>
+  const chat = activeChat();
+  const title =
+    state.view === "chat"
+      ? chat.messages.length
+        ? chat.title
+        : "New chat"
+      : state.view === "docs"
+        ? "Documentation library"
+        : "Downloads & storage";
+  return `<header class="topbar" data-key="topbar">
+    <div class="page-title">${escapeHtml(title)}</div>
     <div class="topbar-actions">
-      <button class="icon-button" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">${icon(state.theme === "dark" ? "moon" : "sun")}</button>
+      <button class="icon-button" id="themeToggle" title="Switch to ${state.theme === "dark" ? "light" : "dark"} mode" aria-label="Switch to ${state.theme === "dark" ? "light" : "dark"} mode">${icon(state.theme === "dark" ? "moon" : "sun")}</button>
     </div>
   </header>`;
 }
 
-function attachmentChips(removable = true): string {
+function attachmentChips(): string {
   if (!state.attachments.length) return "";
-  return `<div class="attachment-row">${state.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span>${removable ? `<button class="icon-button remove-attachment" data-attachment="${escapeHtml(file.id)}" title="Remove ${escapeHtml(file.name)}" style="width:18px;height:18px">${icon("x")}</button>` : ""}</span>`).join("")}</div>`;
+  return `<div class="attachment-row">${state.attachments
+    .map(
+      (file) =>
+        `<span class="attachment-chip" data-key="att-${file.id}">${icon("file")}<span>${escapeHtml(file.name)}</span><button class="icon-button remove-attachment" data-attachment="${escapeHtml(file.id)}" title="Remove ${escapeHtml(file.name)}" aria-label="Remove ${escapeHtml(file.name)}">${icon("x")}</button></span>`,
+    )
+    .join("")}</div>`;
+}
+
+const modeLabel = (mode: ReasoningMode) => (mode === "think" ? "Think" : "Fast");
+
+function renderModeMenu(): string {
+  const option = (mode: ReasoningMode, detail: string) => {
+    const selected = state.mode === mode;
+    return `<button class="popover-item${selected ? " selected" : ""}" data-mode="${mode}" role="menuitemradio" aria-checked="${selected}">
+      <span class="popover-item-icon">${icon(mode === "think" ? "brain" : "bolt")}</span>
+      <span class="popover-item-copy">${modeLabel(mode)}<small>${detail}</small></span>
+      <span class="popover-item-check">${selected ? icon("check") : ""}</span>
+    </button>`;
+  };
+  return `<div class="popover mode-popover" id="modelPopover" role="menu" aria-label="Reasoning mode">
+    <div class="popover-title">MiniCPM 5 mode</div>
+    ${option("fast", "Direct answers · lower latency")}
+    ${option("think", "Deeper reasoning · more tokens")}
+  </div>`;
+}
+
+function renderScopeMenu(): string {
+  const installed = state.docsets.filter(isDocInstalled);
+  const body = installed.length
+    ? installed
+        .map(
+          (doc) =>
+            `<div class="popover-item static" data-key="scope-${doc.id}"><span class="popover-item-icon" style="color:${doc.accent}">${icon("book")}</span><span class="popover-item-copy">${escapeHtml(doc.name)}<small>${doc.pages ? `${doc.pages.toLocaleString()} pages` : "Installed"}</small></span></div>`,
+        )
+        .join("")
+    : `<div class="popover-empty">No documentation installed yet.</div>`;
+  return `<div class="popover scope-popover" id="scopePopover" role="menu" aria-label="Documentation in scope">
+    <div class="popover-title">Docs in scope</div>
+    ${body}
+    <button class="popover-item action" data-view="docs" role="menuitem"><span class="popover-item-copy">Manage documentation…</span></button>
+  </div>`;
 }
 
 function renderComposer(): string {
   const installed = state.docsets.filter(isDocInstalled).length;
-  const popoverEnter = enterClass("popover", state.modelOpen);
-  return `<div class="composer-wrap">
+  const busy = isBusy();
+  return `<div class="composer-wrap" data-key="composer">
     <div class="composer-shell">
       ${attachmentChips()}
       <div class="composer">
-        <textarea id="composerInput" rows="1" placeholder="Ask your offline docs." ${state.busy ? "disabled" : ""}></textarea>
+        <textarea id="composerInput" rows="1" placeholder="Ask your offline docs." aria-label="Message"></textarea>
         <div class="composer-row">
           <div class="composer-left">
-            <button class="tool-button" id="attachButton" title="Attach code" aria-label="Attach code" ${state.busy ? "disabled" : ""}>${icon("paperclip")}</button>
+            <button class="tool-button" id="attachButton" title="Attach code" aria-label="Attach code">${icon("paperclip")}</button>
             <input id="fileInput" type="file" multiple hidden accept=".py,.pyi,.c,.h,.cc,.cpp,.cxx,.hpp,.html,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.json,.md,.txt" />
-            <button class="scope-button" id="scopeButton" title="Choose documentation sources">${icon("layers")} ${installed || "No"} docsets</button>
+            <div class="menu-anchor">
+              <button class="scope-button" id="scopeButton" title="Documentation in scope" aria-expanded="${state.scopeOpen}" aria-haspopup="menu">${icon("layers")} ${installed || "No"} docsets ${icon("chevron")}</button>
+              ${state.scopeOpen ? renderScopeMenu() : ""}
+            </div>
           </div>
           <div class="composer-right">
-            <button class="model-button" id="modelButton" aria-expanded="${state.modelOpen}" aria-haspopup="menu"><span class="mode-indicator"></span>MiniCPM 5 ${icon("chevron")}</button>
-            <button class="send-button" id="sendButton" title="Send" aria-label="Send message" ${state.busy ? "disabled" : ""}>${state.busy ? icon("pause") : icon("arrowUp")}</button>
+            <div class="menu-anchor">
+              <button class="model-button mode-${state.mode}" id="modelButton" aria-expanded="${state.modelOpen}" aria-haspopup="menu" title="Reasoning mode: ${modeLabel(state.mode)}">${icon(state.mode === "think" ? "brain" : "bolt")}<span class="model-name">MiniCPM 5</span><span class="mode-tag">${modeLabel(state.mode)}</span>${icon("chevron")}</button>
+              ${state.modelOpen ? renderModeMenu() : ""}
+            </div>
+            ${busy
+              ? `<button class="send-button stopping" id="stopButton" title="Stop generating" aria-label="Stop generating">${icon("stop")}</button>`
+              : `<button class="send-button" id="sendButton" title="Send" aria-label="Send message">${icon("arrowUp")}</button>`}
           </div>
         </div>
       </div>
-      ${state.modelOpen ? `<div class="popover-dismiss" id="popoverDismiss"></div><div class="popover${popoverEnter}" id="modelPopover" role="menu">${renderModelPopoverBody()}</div>` : ""}
     </div>
   </div>`;
 }
 
-function renderModelPopoverBody(): string {
-  return `
-    <div class="popover-title">MiniCPM 5 mode</div>
-    <button class="popover-item${state.mode === "fast" ? " selected" : ""}" data-mode="fast" role="menuitem">
-      <span class="popover-item-copy">Fast<small>Direct answers · lower latency</small></span>
-    </button>
-    <button class="popover-item${state.mode === "think" ? " selected" : ""}" data-mode="think" role="menuitem">
-      <span class="popover-item-copy">Think<small>Deeper reasoning · more tokens</small></span>
-    </button>`;
-}
-
 function renderEmptyChat(): string {
-  return `<section class="chat-view">
+  return `<section class="chat-view" data-key="chat-view">
     <div class="empty-chat">
       <div class="hero">
         <div class="greeting">${logo()}<h1>Ask Anything</h1></div>
@@ -195,26 +335,40 @@ function renderEmptyChat(): string {
 
 function renderMessage(message: ChatMessage): string {
   const sourceMarkup = message.sources?.length
-    ? `<div class="message-sources">${message.sources.map((source) => `<button class="source-chip" data-source="${escapeHtml(source.url)}" title="Open ${escapeHtml(source.title)}, ${escapeHtml(source.section)}"><span class="source-n">${escapeHtml(source.id)}</span>${escapeHtml(source.docset)} · ${escapeHtml(source.section)}</button>`).join("")}</div>`
+    ? `<div class="message-sources">${message.sources
+        .map(
+          (source) =>
+            `<button class="source-chip" data-source="${escapeHtml(source.url)}" title="Open ${escapeHtml(source.title)}, ${escapeHtml(source.section)}"><span class="source-n">${escapeHtml(source.id)}</span>${escapeHtml(source.docset)} · ${escapeHtml(source.section)}</button>`,
+        )
+        .join("")}</div>`
     : "";
   const attachments = message.attachments?.length
-    ? `<div class="attachment-row">${message.attachments.map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span></span>`).join("")}</div>`
+    ? `<div class="attachment-row">${message.attachments
+        .map((file) => `<span class="attachment-chip">${icon("file")}<span>${escapeHtml(file.name)}</span></span>`)
+        .join("")}</div>`
     : "";
-  return `<article class="message ${message.role}${messageEnterClass(message.id)}" data-message-id="${message.id}">
+  const note = message.stopped
+    ? `<div class="message-note">Stopped by you.</div>`
+    : message.failed
+      ? `<div class="message-note error">This request did not finish.</div>`
+      : "";
+  return `<article class="message ${message.role}${messageEnterClass(message.id)}" data-key="msg-${message.id}" data-message-id="${message.id}">
     <div class="message-avatar">${message.role === "assistant" ? logo() : "A"}</div>
-    <div>
+    <div class="message-main">
       <div class="message-head">${message.role === "assistant" ? "Veda" : "You"}<span class="message-time">${timeLabel(message.createdAt)}</span></div>
       ${attachments}
       <div class="message-body">${renderMarkdown(message.content)}${message.streaming ? '<span class="stream-caret"></span>' : ""}</div>
+      ${note}
       ${sourceMarkup}
     </div>
   </article>`;
 }
 
 function renderChat(): string {
-  if (!state.messages.length) return renderEmptyChat();
-  return `<section class="chat-view">
-    <div class="messages" id="messagesScroller"><div class="message-list">${state.messages.map(renderMessage).join("")}</div></div>
+  const chat = activeChat();
+  if (!chat.messages.length) return renderEmptyChat();
+  return `<section class="chat-view" data-key="chat-view">
+    <div class="messages" id="messagesScroller"><div class="message-list">${chat.messages.map(renderMessage).join("")}</div></div>
     ${renderComposer()}
   </section>`;
 }
@@ -226,42 +380,71 @@ function docAction(doc: Docset): string {
   if (doc.state === "updateAvailable") {
     return `<div class="update-check">Update available</div><div class="doc-action-buttons"><button class="button remove-doc" data-docset="${doc.id}">Remove</button><button class="button primary install-doc" data-docset="${doc.id}">Update</button></div>`;
   }
-  if (doc.state === "downloading" || doc.state === "indexing") return `<div class="progress-track"><div class="progress-value" style="width:${doc.progress}%"></div></div><span class="download-state">${doc.state} ${Math.round(doc.progress)}%</span>`;
+  if (doc.state === "downloading" || doc.state === "indexing")
+    return `<div class="progress-track"><div class="progress-value" style="width:${doc.progress}%"></div></div><span class="download-state">${doc.state} ${Math.round(doc.progress)}%</span>`;
   return `<span></span><button class="button primary install-doc" data-docset="${doc.id}">${icon("download")} Download</button>`;
 }
 
 function renderDocs(): string {
   const installed = state.docsets.filter(isDocInstalled);
   const indexedPages = installed.reduce((sum, doc) => sum + (doc.pages ?? 0), 0);
-  return `<section class="content-view"><div class="content-inner">
-    <div class="content-header">
-      <div><h1>Docs</h1><p>Install, update, or remove documentation.</p></div>
-      <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" /></label>
-    </div>
-    <div class="library-summary">${indexedPages.toLocaleString()} installed pages</div>
-    <div class="doc-grid${contentEnterClass()}">${state.docsets.map((doc) => `<article class="doc-card" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
-      <div class="doc-head"><div class="doc-icon">${doc.initials}</div><div class="doc-copy"><div class="doc-name">${doc.name}</div><div class="doc-version">${doc.version}</div></div></div>
-      <div class="doc-description">${doc.detail}</div>
+  let body: string;
+  if (state.docsetsError) {
+    body = `<div class="empty-list error-state">
+      <p>Documentation could not be loaded.</p>
+      <p class="empty-detail">${escapeHtml(state.docsetsError)}</p>
+      <button class="button primary" id="retryDocsets">Try again</button>
+    </div>`;
+  } else if (!state.docsets.length) {
+    body = `<div class="empty-list">Loading documentation…</div>`;
+  } else {
+    body = `<div class="doc-grid${contentEnterClass()}">${state.docsets
+      .map(
+        (doc) => `<article class="doc-card" data-key="doc-${doc.id}" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
+      <div class="doc-head"><div class="doc-icon">${escapeHtml(doc.initials)}</div><div class="doc-copy"><div class="doc-name">${escapeHtml(doc.name)}</div><div class="doc-version">${escapeHtml(doc.version)}</div></div></div>
+      <div class="doc-description">${escapeHtml(doc.detail)}</div>
       <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span>${doc.pages !== undefined ? `<span>${doc.pages.toLocaleString()} installed pages</span>` : ""}</div>
       <div class="doc-footer">${docAction(doc)}</div>
-    </article>`).join("")}</div>
+    </article>`,
+      )
+      .join("")}</div>`;
+  }
+  return `<section class="content-view" data-key="docs-view"><div class="content-inner">
+    <div class="content-header">
+      <div><h1>Docs</h1><p>Install, update, or remove documentation.</p></div>
+      <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" aria-label="Filter documentation" /></label>
+    </div>
+    <div class="library-summary">${indexedPages.toLocaleString()} installed pages across ${installed.length} ${installed.length === 1 ? "docset" : "docsets"}</div>
+    ${body}
   </div></section>`;
 }
 
 function renderDownloads(): string {
-  const rows = state.downloads.length ? state.downloads.map((item) => {
-    const indexing = item.id.endsWith("-index") || item.state === "indexing";
-    const progressCopy = indexing
-      ? `${Math.round(item.downloadedBytes).toLocaleString()} of ${Math.round(item.totalBytes).toLocaleString()} sections`
-      : `${bytes(item.downloadedBytes)} of ${bytes(item.totalBytes)}${item.speedBytes ? ` · ${bytes(item.speedBytes)}/s` : ""}`;
-    return `<div class="download-row">
-      <div class="download-file-icon">${item.id.startsWith("minicpm") ? icon("chip") : icon("file")}</div>
-      <div><div class="download-name">${escapeHtml(item.name)}</div><div class="download-detail">${escapeHtml(item.detail)}</div></div>
+  let rows: string;
+  if (state.downloadsError) {
+    rows = `<div class="empty-list error-state">
+      <p>Downloads could not be loaded.</p>
+      <p class="empty-detail">${escapeHtml(state.downloadsError)}</p>
+      <button class="button primary" id="retryDownloads">Try again</button>
+    </div>`;
+  } else if (!state.downloads.length) {
+    rows = `<div class="empty-list">No downloads yet.</div>`;
+  } else {
+    rows = state.downloads
+      .map((item) => {
+        const indexing = item.id.endsWith("-index") || item.state === "indexing";
+        const progressCopy = indexing
+          ? `${Math.round(item.downloadedBytes).toLocaleString()} of ${Math.round(item.totalBytes).toLocaleString()} sections`
+          : `${bytes(item.downloadedBytes)} of ${bytes(item.totalBytes)}${item.speedBytes ? ` · ${bytes(item.speedBytes)}/s` : ""}`;
+        return `<div class="download-row" data-key="dl-${item.id}">
+      <div class="download-copy"><div class="download-name">${escapeHtml(item.name)}</div><div class="download-detail">${escapeHtml(item.detail)}</div></div>
       <div><div class="progress-track"><div class="progress-value" style="width:${item.progress}%"></div></div><div class="download-progress-copy">${progressCopy}</div></div>
       <div class="download-state">${item.state === "installed" ? "Ready" : escapeHtml(item.state)}</div>
     </div>`;
-  }).join("") : `<div class="empty-list">No downloads yet.</div>`;
-  return `<section class="content-view"><div class="content-inner">
+      })
+      .join("");
+  }
+  return `<section class="content-view" data-key="downloads-view"><div class="content-inner">
     <div class="content-header"><div><h1>Downloads</h1><p>Manage downloaded files.</p></div><button class="button" id="dataFolder">${icon("folder")} Data folder</button></div>
     <div class="download-list">${rows}</div>
   </div></section>`;
@@ -270,15 +453,26 @@ function renderDownloads(): string {
 function renderSettings(): string {
   const entering = enterClass("settings", state.settingsOpen);
   if (!state.settingsOpen) return "";
-  const context = state.preflight?.recommendedContext.toLocaleString() ?? "Automatic";
-  return `<div class="modal-backdrop${entering}" id="settingsBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+  const recommended = state.preflight?.recommendedContext;
+  return `<div class="modal-backdrop${entering}" id="settingsBackdrop" data-key="settings"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Appearance</div><div class="setting-detail">${state.theme === "dark" ? "Dark" : "Light"}</div></div><button class="button" id="settingsTheme">Change</button></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">MiniCPM 5 · ${state.selectedQuant.toUpperCase()}</div></div></div>
-      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Context</div><div class="setting-detail">${context} tokens</div></div></div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Reasoning</div><div class="setting-detail">${modeLabel(state.mode)}</div></div><button class="button" id="settingsMode">Change</button></div>
+      <div class="setting-block">
+        <div class="setting-copy">
+          <div class="setting-name">Context window</div>
+          <div class="setting-detail" id="contextDetail">${contextLabel(state.contextTokens)}${state.contextTokens <= 0 && recommended ? ` · ${recommended.toLocaleString()} on this device` : ""}</div>
+        </div>
+        <div class="context-control">
+          <input type="range" id="contextRange" class="range" min="0" max="${CONTEXT_MAX}" step="${CONTEXT_STEP}" value="${state.contextTokens}" aria-label="Context window tokens" />
+          <input type="number" id="contextNumber" class="number-input" min="0" max="${CONTEXT_MAX}" step="${CONTEXT_STEP}" value="${state.contextTokens}" aria-label="Context window tokens" />
+        </div>
+        <div class="context-scale"><span>0 · Auto</span><span>${(CONTEXT_MAX / 1024).toFixed(0)}K</span></div>
+      </div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Files</div><div class="setting-detail">Open Veda's data folder</div></div><button class="button" id="settingsDataFolder">Open</button></div>
-      <div class="privacy-box"><strong>Data handling.</strong> Prompts, documentation and attached code remain on this device. Telemetry is disabled.</div>
+      <div class="setting-row"><div class="setting-copy"><div class="setting-name">Chat history</div><div class="setting-detail">${state.chats.filter((chat) => chat.messages.length).length} saved on this device</div></div><button class="button danger" id="clearHistory">Clear</button></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Veda</div><div class="setting-detail">Version 0.1.0</div></div></div>
     </div>
   </section></div>`;
@@ -317,7 +511,12 @@ function renderOnboardingBody(): string {
   }
   const total = state.docsets.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
   return `<div class="onboarding-kicker">Documentation</div><h1>Choose documentation</h1><p class="onboarding-lead">Download only what you need. You can change this later.</p>
-    <div class="setup-docs">${state.docsets.map((doc) => `<button class="setup-doc${state.setupDocsets.has(doc.id) ? " selected" : ""}" data-setup-doc="${doc.id}"><div class="setup-doc-abbr">${doc.initials}</div><div class="setup-doc-name">${doc.name}</div></button>`).join("")}</div>
+    <div class="setup-docs">${state.docsets
+      .map(
+        (doc) =>
+          `<button class="setup-doc${state.setupDocsets.has(doc.id) ? " selected" : ""}" data-setup-doc="${doc.id}"><div class="setup-doc-abbr">${escapeHtml(doc.initials)}</div><div class="setup-doc-name">${escapeHtml(doc.name)}</div></button>`,
+      )
+      .join("")}</div>
     <div class="setup-summary">${state.setupDocsets.size} packs · ${bytes(total)} download</div>`;
 }
 
@@ -332,7 +531,7 @@ function renderOnboarding(): string {
     : state.setupRunning
       ? `<div class="onboarding-note">Setup must finish before the rest of the app can be used.</div>`
       : `<div class="onboarding-note">You can change these options later in Settings.</div><div class="button-row">${state.setupStep > 0 ? '<button class="button" id="setupBack">Back</button>' : ""}<button class="button primary" id="setupNext" ${(hasFailures && state.setupStep === 0) || (last && state.setupDocsets.size === 0) ? "disabled" : ""}>${last ? "Set up Veda" : "Continue"}</button></div>`;
-  return `<div class="modal-backdrop setup-backdrop${entering}"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
+  return `<div class="modal-backdrop setup-backdrop${entering}" data-key="onboarding"><section class="onboarding" role="dialog" aria-modal="true" aria-labelledby="setupTitle">
     <div class="onboarding-top"><div class="onboarding-brand">${logo()} Veda</div>${progressMode ? "" : `<div class="step-dots">${[0, 1, 2].map((step) => `<span class="step-dot${state.setupStep === step ? " active" : ""}"></span>`).join("")}</div>`}</div>
     <div class="onboarding-body${entering}" id="setupTitle">${renderOnboardingBody()}</div>
     <div class="onboarding-bottom">${footer}</div>
@@ -340,22 +539,29 @@ function renderOnboarding(): string {
 }
 
 function renderReader(): string {
-  const entering = enterClass("reader", Boolean(state.reader));
-  if (!state.reader) return "";
-  return `<div class="modal-backdrop${entering}" id="readerBackdrop"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
-    <header class="settings-header"><div><h2 id="readerTitle">${escapeHtml(state.reader.title)}</h2><div class="setting-detail">${escapeHtml(state.reader.docset)} · ${escapeHtml(state.reader.section)}</div></div><button class="icon-button" id="closeReader" aria-label="Close source">${icon("x")}</button></header>
-    <div class="settings-body"><article class="setting-section message-body">${renderMarkdown(state.reader.text)}</article><div class="privacy-box"><strong>Local source.</strong> This excerpt came from the downloaded documentation index. Canonical reference: ${escapeHtml(state.reader.url)}</div></div>
+  const open = Boolean(state.reader) || state.readerLoading;
+  const entering = enterClass("reader", open);
+  if (!open) return "";
+  const body = state.reader
+    ? `<article class="setting-section message-body">${renderMarkdown(state.reader.text)}</article>
+       <div class="reader-origin">Local excerpt · ${escapeHtml(state.reader.url)}</div>`
+    : `<div class="empty-list">Opening source…</div>`;
+  return `<div class="modal-backdrop${entering}" id="readerBackdrop" data-key="reader"><section class="settings-panel reader-panel" role="dialog" aria-modal="true" aria-labelledby="readerTitle">
+    <header class="settings-header"><div><h2 id="readerTitle">${escapeHtml(state.reader?.title ?? "Source")}</h2><div class="setting-detail">${escapeHtml(state.reader ? `${state.reader.docset} · ${state.reader.section}` : "")}</div></div><button class="icon-button" id="closeReader" aria-label="Close source">${icon("x")}</button></header>
+    <div class="settings-body">${body}</div>
   </section></div>`;
 }
 
 // Toasts animate only the first time each toast appears. Re-renders (setup
 // progress, downloads, theme changes) must not replay the entrance.
-let enteredToasts = 0;
+const enteredToasts = new Set<string>();
 function renderToasts(): string {
-  const previous = enteredToasts;
-  enteredToasts = state.toasts.length;
-  return `<div class="toast-stack">${state.toasts
-    .map((toast, index) => `<div class="toast${index >= previous ? " enter" : ""}"><span class="status-dot"></span>${toast}</div>`)
+  return `<div class="toast-stack" data-key="toasts">${state.toasts
+    .map((toast) => {
+      const isNew = !enteredToasts.has(toast.id);
+      enteredToasts.add(toast.id);
+      return `<div class="toast${isNew ? " enter" : ""}" data-key="toast-${toast.id}"><span class="status-dot"></span>${escapeHtml(toast.text)}</div>`;
+    })
     .join("")}</div>`;
 }
 
@@ -387,71 +593,88 @@ function contentEnterClass(): string {
   return " enter";
 }
 
-// The composer is recreated on every render, so its draft and focus are
-// preserved explicitly. Any click must never lose what the user typed.
+// The composer's draft belongs to the user, not to the render pass. Morphing
+// preserves the live textarea node, but the draft is still tracked so a new
+// chat can clear it deliberately.
 let composerDraft = "";
-let composerFocused = false;
 
-// Rendering is a synchronous, instant DOM swap. There are deliberately no
-// whole-page transitions: the View Transition API is avoided because it
-// crossfades the window on every navigation and throws when a second
-// transition starts while one is running (which silently ate clicks).
+// ---------------------------------------------------------------------------
+// Rendering is a keyed morph, not an innerHTML swap. Nodes survive across
+// renders, so CSS transitions actually interpolate, entrance animations do not
+// replay (no flash), and focus/scroll/selection are retained.
+// ---------------------------------------------------------------------------
 function render(): void {
-  const previous = document.querySelector<HTMLTextAreaElement>("#composerInput");
-  composerFocused = Boolean(previous && previous === document.activeElement);
-  // The messages scroller is recreated by the DOM swap, so its position must
-  // be carried across re-renders; otherwise toggling the theme or opening a
-  // menu would snap the chat back to the top.
-  const previousScroller = document.querySelector<HTMLElement>("#messagesScroller");
-  const chatScrollTop = previousScroller?.scrollTop ?? 0;
   try {
     const view = state.view === "chat" ? renderChat() : state.view === "docs" ? renderDocs() : renderDownloads();
-    app.innerHTML = `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`;
-    bindEvents();
-    const composer = document.querySelector<HTMLTextAreaElement>("#composerInput");
-    if (composer) {
-      composer.value = composerDraft;
-      composer.style.height = "auto";
-      composer.style.height = `${Math.min(composer.scrollHeight, 190)}px`;
-      if (composerFocused) {
-        composer.focus();
-        composer.setSelectionRange(composer.value.length, composer.value.length);
-        composerFocused = false;
-      }
-    }
-    const scroller = document.querySelector<HTMLElement>("#messagesScroller");
-    if (scroller) scroller.scrollTop = chatScrollTop;
-    if (state.messages.length) requestAnimationFrame(scrollIfNewContent);
+    morph(
+      app,
+      `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}" data-key="shell">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`,
+    );
+    syncComposer();
+    focusPendingInput();
+    if (activeChat().messages.length) requestAnimationFrame(scrollIfNewContent);
   } catch (error) {
     // A rendering failure must never silently kill the app.
     console.error("Veda render failed:", error);
   }
 }
 
-let renderTimer: number | undefined;
-function scheduleRender(): void {
-  if (renderTimer !== undefined) return;
-  renderTimer = window.setTimeout(() => {
-    renderTimer = undefined;
-    if (state.setupRunning && document.querySelector("#setupProgressBar")) return;
-    render();
-  }, 250);
+function syncComposer(): void {
+  const composer = document.querySelector<HTMLTextAreaElement>("#composerInput");
+  if (!composer) return;
+  if (composer.value !== composerDraft) composer.value = composerDraft;
+  autoGrow(composer);
 }
 
-function toggleTheme(): void {
-  state.theme = state.theme === "dark" ? "light" : "dark";
-  document.documentElement.dataset.theme = state.theme;
-  storageSet("veda:theme", state.theme);
-  const toggle = document.querySelector<HTMLElement>("#themeToggle");
-  if (toggle) toggle.innerHTML = icon(state.theme === "dark" ? "moon" : "sun");
-  const detail = document.querySelector<HTMLElement>("#settingsTheme")?.closest(".setting-row")?.querySelector<HTMLElement>(".setting-detail");
-  if (detail) detail.textContent = state.theme === "dark" ? "Dark" : "Light";
+function autoGrow(element: HTMLTextAreaElement): void {
+  element.style.height = "auto";
+  element.style.height = `${Math.min(element.scrollHeight, 190)}px`;
 }
+
+// A newly revealed rename field should receive focus exactly once.
+let focusTarget: string | undefined;
+function focusPendingInput(): void {
+  if (!focusTarget) return;
+  const element = document.querySelector<HTMLInputElement>(focusTarget);
+  focusTarget = undefined;
+  if (!element) return;
+  element.focus();
+  element.select();
+}
+
+let renderQueued = false;
+function scheduleRender(): void {
+  if (renderQueued) return;
+  renderQueued = true;
+  // Coalescing on a microtask keeps rapid progress events cheap without
+  // introducing the visible lag a timeout caused.
+  queueMicrotask(() => {
+    renderQueued = false;
+    render();
+  });
+}
+
+function setTheme(theme: Theme): void {
+  state.theme = theme;
+  document.documentElement.dataset.theme = theme;
+  storageSet("veda:theme", theme);
+  // Everything else is derived from state by the renderer. Patching individual
+  // nodes by hand is what previously left the DOM inconsistent with state
+  // after a light/dark round trip.
+  render();
+}
+
+const toggleTheme = () => setTheme(state.theme === "dark" ? "light" : "dark");
 
 function toast(message: string): void {
-  state.toasts.push(message);
+  const entry = { id: newId(), text: message };
+  state.toasts.push(entry);
   render();
-  window.setTimeout(() => { state.toasts.shift(); render(); }, 3200);
+  window.setTimeout(() => {
+    state.toasts = state.toasts.filter((item) => item.id !== entry.id);
+    enteredToasts.delete(entry.id);
+    render();
+  }, 3200);
 }
 
 function scrollMessages(): void {
@@ -464,8 +687,9 @@ function scrollMessages(): void {
 // downloads must not yank the user back to the bottom of the chat.
 let lastScrollSignal = "";
 function messageScrollSignal(): string {
-  const last = state.messages[state.messages.length - 1];
-  return `${state.messages.length}:${last?.content.length ?? 0}`;
+  const chat = activeChat();
+  const last = chat.messages[chat.messages.length - 1];
+  return `${chat.id}:${chat.messages.length}:${last?.content.length ?? 0}`;
 }
 function scrollIfNewContent(): void {
   const signal = messageScrollSignal();
@@ -474,14 +698,108 @@ function scrollIfNewContent(): void {
   scrollMessages();
 }
 
-function setView(view: View): void {
+function closeMenus(): boolean {
+  const wasOpen = state.modelOpen || state.scopeOpen || Boolean(state.menuChatId);
   state.modelOpen = false;
+  state.scopeOpen = false;
+  state.menuChatId = undefined;
+  return wasOpen;
+}
+
+function setView(view: View): void {
+  closeMenus();
   const changed = state.view !== view;
   state.view = view;
   // The docs grid animates when navigation actually enters it; clicking the
   // already-active tab must not replay anything.
   animateContent = changed && view === "docs";
   render();
+}
+
+// ---------------------------------------------------------------------------
+// Chat store operations
+// ---------------------------------------------------------------------------
+
+function persistChats(): void {
+  saveChats(state.chats);
+}
+
+function openChat(id: string): void {
+  closeMenus();
+  state.renamingChatId = undefined;
+  if (state.activeChatId !== id) {
+    state.activeChatId = id;
+    composerDraft = "";
+  }
+  state.view = "chat";
+  render();
+}
+
+function startNewChat(): void {
+  closeMenus();
+  state.renamingChatId = undefined;
+  // Reuse an existing untouched chat instead of stacking up empty ones.
+  const empty = state.chats.find((chat) => chat.messages.length === 0);
+  const chat = empty ?? createChat();
+  if (!empty) state.chats.unshift(chat);
+  state.activeChatId = chat.id;
+  state.attachments = [];
+  composerDraft = "";
+  state.view = "chat";
+  render();
+}
+
+function deleteChat(id: string): void {
+  const chat = state.chats.find((entry) => entry.id === id);
+  if (!chat) return;
+  // A conversation still being answered is stopped first so no reply can be
+  // written back into a chat the user has deleted.
+  pending.get(id)?.controller.abort();
+  pending.delete(id);
+  state.chats = state.chats.filter((entry) => entry.id !== id);
+  if (!state.chats.length) state.chats = [createChat()];
+  if (state.activeChatId === id) {
+    state.activeChatId = state.chats[0].id;
+    composerDraft = "";
+  }
+  closeMenus();
+  state.renamingChatId = undefined;
+  persistChats();
+  render();
+  toast("Chat deleted.");
+}
+
+function renameChat(id: string, title: string): void {
+  const chat = state.chats.find((entry) => entry.id === id);
+  if (chat) {
+    const clean = title.replace(/\s+/g, " ").trim();
+    chat.title = clean ? clean.slice(0, 80) : chat.title;
+    persistChats();
+  }
+  state.renamingChatId = undefined;
+  render();
+}
+
+// ---------------------------------------------------------------------------
+// Resource loading
+// ---------------------------------------------------------------------------
+
+async function loadDocsets(): Promise<void> {
+  try {
+    state.docsets = await bridge.docsets();
+    state.docsetsError = undefined;
+  } catch (error) {
+    state.docsetsError = errorText(error);
+  }
+}
+
+async function loadDownloads(): Promise<void> {
+  try {
+    state.downloads = await bridge.downloads();
+    state.downloadsError = undefined;
+  } catch (error) {
+    state.downloadsError = errorText(error);
+  }
 }
 
 async function installDocsetBlocking(id: string): Promise<void> {
@@ -496,7 +814,7 @@ async function installDocsetBlocking(id: string): Promise<void> {
   render();
   try {
     await bridge.installDocset(id);
-    [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
+    await Promise.all([loadDocsets(), loadDownloads()]);
     state.setupRunning = false;
     state.onboardingOpen = false;
     render();
@@ -510,10 +828,6 @@ async function installDocsetBlocking(id: string): Promise<void> {
 function updateSetupProgress(status: string, progress = 0): void {
   state.setupStatus = status;
   state.setupProgress = progress;
-  const bar = document.querySelector<HTMLElement>("#setupProgressBar");
-  const text = document.querySelector<HTMLElement>("#setupProgressText");
-  if (bar) bar.style.width = `${progress}%`;
-  if (text) text.textContent = status;
 }
 
 async function removeDocsetBlocking(id: string): Promise<void> {
@@ -533,7 +847,7 @@ async function removeDocsetBlocking(id: string): Promise<void> {
   render();
   try {
     await bridge.removeDocset(id);
-    [state.docsets, state.downloads] = await Promise.all([bridge.docsets(), bridge.downloads()]);
+    await Promise.all([loadDocsets(), loadDownloads()]);
     state.setupRunning = false;
     state.onboardingOpen = false;
     render();
@@ -558,10 +872,10 @@ async function runSetup(): Promise<void> {
       const doc = state.docsets.find((item) => item.id === id);
       if (doc?.state === "installed") continue;
       updateSetupProgress(`Preparing ${doc?.name ?? id}…`);
+      render();
       await bridge.installDocset(id);
     }
-    state.docsets = await bridge.docsets();
-    state.downloads = await bridge.downloads();
+    await Promise.all([loadDocsets(), loadDownloads()]);
     storageSet("veda:onboarded", "true");
     state.setupRunning = false;
     state.onboardingOpen = false;
@@ -577,161 +891,498 @@ async function addFiles(files: FileList): Promise<void> {
   const maxBytes = 512 * 1024;
   let added = false;
   for (const file of Array.from(files).slice(0, 8)) {
-    if (file.size > maxBytes) { toast(`${file.name} is larger than the 512 KB attachment limit.`); continue; }
+    if (file.size > maxBytes) {
+      toast(`${file.name} is larger than the 512 KB attachment limit.`);
+      continue;
+    }
     const content = await file.text();
     const language = file.name.split(".").pop()?.toLowerCase() ?? "text";
-    state.attachments.push({ id: crypto.randomUUID(), name: file.name, bytes: file.size, language, content });
+    state.attachments.push({ id: newId(), name: file.name, bytes: file.size, language, content });
     added = true;
   }
   if (added) render();
 }
 
+// ---------------------------------------------------------------------------
+// Asking
+// ---------------------------------------------------------------------------
+
 async function sendMessage(): Promise<void> {
-  if (state.busy) return;
+  const chat = activeChat();
+  if (isBusy(chat.id)) return;
   const input = document.querySelector<HTMLTextAreaElement>("#composerInput");
-  const text = input?.value.trim() ?? "";
+  const text = (input?.value ?? composerDraft).trim();
   if (!text) return;
-  const attachments = structuredClone(state.attachments);
-  state.messages.push({ id: crypto.randomUUID(), role: "user", content: text, createdAt: Date.now(), attachments });
-  const assistant: ChatMessage = { id: crypto.randomUUID(), role: "assistant", content: "Searching installed docs…", createdAt: Date.now(), streaming: true };
-  state.messages.push(assistant);
+
+  const attachments = state.attachments.map((file) => ({ ...file }));
+  const chatId = chat.id;
+  chat.messages.push({ id: newId(), role: "user", content: text, createdAt: Date.now(), attachments });
+  if (chat.title === "New chat") chat.title = deriveTitle(text);
+  const assistantId = newId();
+  chat.messages.push({ id: assistantId, role: "assistant", content: "Searching installed docs…", createdAt: Date.now(), streaming: true });
+  chat.updatedAt = Date.now();
+
   state.attachments = [];
-  state.busy = true;
   composerDraft = "";
+  if (input) input.value = "";
+
+  const controller = new AbortController();
+  pending.set(chatId, { chatId, messageId: assistantId, controller });
+  persistChats();
   render();
+
   try {
-    const response = await bridge.ask({ chatId: "local", message: text, mode: state.mode, docsets: state.docsets.filter(isDocInstalled).map((doc) => doc.id), attachments });
-    assistant.content = response.content;
-    assistant.sources = response.sources;
-    assistant.streaming = false;
+    const response = await bridge.ask({
+      chatId,
+      message: text,
+      mode: state.mode,
+      docsets: state.docsets.filter(isDocInstalled).map((doc) => doc.id),
+      attachments,
+      contextTokens: state.contextTokens,
+      signal: controller.signal,
+    });
+    // The reply is written into the store, so it lands even if the user is on
+    // another view or in a different conversation.
+    applyReply(chatId, assistantId, (message) => {
+      message.content = response.content;
+      message.sources = response.sources;
+      message.streaming = false;
+    });
   } catch (error) {
-    assistant.content = `Veda could not complete the local request. ${errorText(error)}`;
-    assistant.streaming = false;
+    if (isAbort(error)) {
+      applyReply(chatId, assistantId, (message) => {
+        message.content = message.content === "Searching installed docs…" ? "Stopped before an answer was produced." : message.content;
+        message.streaming = false;
+        message.stopped = true;
+      });
+    } else {
+      applyReply(chatId, assistantId, (message) => {
+        message.content = `Veda could not complete the local request. ${errorText(error)}`;
+        message.streaming = false;
+        message.failed = true;
+      });
+    }
   } finally {
-    state.busy = false;
+    // Busy is always released, whatever happened, so the composer can never
+    // be left permanently disabled.
+    if (pending.get(chatId)?.messageId === assistantId) pending.delete(chatId);
+    persistChats();
     render();
   }
 }
 
-function bindEvents(): void {
-  document.querySelectorAll<HTMLElement>("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view as View)));
-  document.querySelector("#newChat")?.addEventListener("click", () => { state.messages = []; enteredMessages.clear(); composerDraft = ""; setView("chat"); });
-  document.querySelector("#wordmark")?.addEventListener("click", () => {
-    if (!state.sidebarCollapsed) return;
-    state.sidebarCollapsed = false;
-    storageSet("veda:sidebar", "open");
-    document.querySelector(".app-shell")?.classList.remove("sidebar-collapsed");
-    const mark = document.querySelector<HTMLElement>("#wordmark");
-    if (mark) {
-      mark.title = "Veda";
-      mark.setAttribute("aria-label", "Veda");
-    }
-  });
-  document.querySelector("#collapseSidebar")?.addEventListener("click", () => {
-    state.sidebarCollapsed = !state.sidebarCollapsed;
-    storageSet("veda:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
-    document.querySelector(".app-shell")?.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
-  });
-  document.querySelector("#themeToggle")?.addEventListener("click", toggleTheme);
-  document.querySelector("#settingsTheme")?.addEventListener("click", toggleTheme);
-  document.querySelector("#settingsButton")?.addEventListener("click", () => { state.settingsOpen = true; render(); });
-  document.querySelector("#closeSettings")?.addEventListener("click", () => { state.settingsOpen = false; render(); });
-  document.querySelector("#settingsBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.settingsOpen = false; render(); } });
-  document.querySelector("#modelButton")?.addEventListener("click", () => { state.modelOpen = !state.modelOpen; render(); });
-  document.querySelector("#popoverDismiss")?.addEventListener("click", () => { state.modelOpen = false; render(); });
-  document.querySelectorAll<HTMLElement>("[data-mode]").forEach((button) => button.addEventListener("click", () => { state.mode = button.dataset.mode as ReasoningMode; state.modelOpen = false; render(); }));
-  document.querySelector("#sendButton")?.addEventListener("click", () => void sendMessage());
-  const input = document.querySelector<HTMLTextAreaElement>("#composerInput");
-  input?.addEventListener("input", () => { composerDraft = input.value; input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 190)}px`; });
-  input?.addEventListener("keydown", (event) => {
-    // Ignore Enter while an IME is composing (CJK input), and ignore
-    // repeats so a held key can't fire the request twice.
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.repeat) return;
-    event.preventDefault();
-    void sendMessage();
-  });
-  document.querySelector("#attachButton")?.addEventListener("click", () => document.querySelector<HTMLInputElement>("#fileInput")?.click());
-  document.querySelector<HTMLInputElement>("#fileInput")?.addEventListener("change", (event) => { const files = (event.currentTarget as HTMLInputElement).files; if (files) void addFiles(files); });
-  document.querySelectorAll<HTMLElement>(".remove-attachment").forEach((button) => button.addEventListener("click", () => { state.attachments = state.attachments.filter((file) => file.id !== button.dataset.attachment); render(); }));
-  document.querySelectorAll<HTMLElement>(".install-doc").forEach((button) => button.addEventListener("click", () => void installDocsetBlocking(button.dataset.docset ?? "")));
-  document.querySelectorAll<HTMLElement>(".remove-doc").forEach((button) => button.addEventListener("click", () => void removeDocsetBlocking(button.dataset.docset ?? "")));
-  document.querySelectorAll<HTMLElement>("[data-source]").forEach((button) => button.addEventListener("click", () => {
-    const url = button.dataset.source ?? "";
-    void bridge.readSource(url).then((source) => { state.reader = source; render(); }).catch((error: unknown) => toast(`Could not open source: ${errorText(error)}`));
-  }));
-  document.querySelector("#closeReader")?.addEventListener("click", () => { state.reader = undefined; render(); });
-  document.querySelector("#readerBackdrop")?.addEventListener("click", (event) => { if (event.target === event.currentTarget) { state.reader = undefined; render(); } });
-  const openDataFolder = () => {
-    void bridge.revealDataFolder().catch((error: unknown) => toast(`Could not open the data folder: ${errorText(error)}`));
-  };
-  document.querySelector("#dataFolder")?.addEventListener("click", openDataFolder);
-  document.querySelector("#settingsDataFolder")?.addEventListener("click", openDataFolder);
-  document.querySelector<HTMLInputElement>("#docSearch")?.addEventListener("input", (event) => {
-    const query = (event.currentTarget as HTMLInputElement).value.trim().toLowerCase();
-    document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
-      card.hidden = Boolean(query) && !(card.dataset.docFilter ?? "").includes(query);
-    });
-  });
-  document.querySelector("#scopeButton")?.addEventListener("click", () => setView("docs"));
-  document.querySelector("#setupBack")?.addEventListener("click", () => { state.setupStep = Math.max(0, state.setupStep - 1); render(); });
-  document.querySelector("#setupNext")?.addEventListener("click", () => {
-    if (state.setupStep < 2) { state.setupStep += 1; render(); return; }
-    void runSetup();
-  });
-  document.querySelector("#setupRetry")?.addEventListener("click", () => {
-    state.setupError = undefined;
-    void runSetup();
-  });
-  document.querySelector("#setupCancelError")?.addEventListener("click", () => {
-    state.setupError = undefined;
-    state.setupRunning = false;
-    state.setupStep = 2;
-    render();
-  });
-  document.querySelectorAll<HTMLElement>("[data-quant]").forEach((button) => button.addEventListener("click", () => { state.selectedQuant = button.dataset.quant as "q5" | "q8"; render(); }));
-  document.querySelectorAll<HTMLElement>("[data-setup-doc]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.setupDoc ?? ""; if (state.setupDocsets.has(id)) state.setupDocsets.delete(id); else state.setupDocsets.add(id); render(); }));
+/** Applies a reply to a message that may belong to a background conversation. */
+function applyReply(chatId: string, messageId: string, mutate: (message: ChatMessage) => void): void {
+  const chat = state.chats.find((entry) => entry.id === chatId);
+  const message = chat?.messages.find((entry) => entry.id === messageId);
+  if (!chat || !message) return;
+  mutate(message);
+  chat.updatedAt = Date.now();
 }
 
-// Escape closes transient surfaces (mode menu, source reader, settings).
-// The onboarding flow intentionally stays open until setup completes.
-document.addEventListener("keydown", (event) => {
-  if (event.key !== "Escape") return;
-  if (state.modelOpen) { state.modelOpen = false; render(); return; }
-  if (state.reader) { state.reader = undefined; render(); return; }
-  if (state.settingsOpen) { state.settingsOpen = false; render(); }
-});
+function stopGenerating(): void {
+  const request = pending.get(state.activeChatId);
+  if (!request) return;
+  request.controller.abort();
+  // The pending entry is cleared by sendMessage's finally block.
+}
+
+async function openSource(url: string): Promise<void> {
+  state.readerLoading = true;
+  state.reader = undefined;
+  render();
+  try {
+    state.reader = await bridge.readSource(url);
+  } catch (error) {
+    toast(`Could not open source: ${errorText(error)}`);
+  } finally {
+    state.readerLoading = false;
+    render();
+  }
+}
+
+function setContext(value: number): void {
+  const clamped = Number.isFinite(value) ? Math.min(CONTEXT_MAX, Math.max(0, Math.round(value))) : 0;
+  state.contextTokens = clamped;
+  storageSet("veda:context", String(clamped));
+}
+
+// ---------------------------------------------------------------------------
+// Events
+//
+// Delegated once at the root. Morphing keeps nodes alive across renders, and
+// delegation means no listener is ever bound twice or lost after a re-render.
+// ---------------------------------------------------------------------------
+
+function closest(target: EventTarget | null, selector: string): HTMLElement | null {
+  return target instanceof Element ? target.closest<HTMLElement>(selector) : null;
+}
+
+function bindGlobalEvents(): void {
+  app.addEventListener("click", (event) => {
+    const target = event.target;
+
+    // Any click outside an open menu dismisses it first.
+    const insideMenu = closest(target, ".menu-anchor, .recent-wrap");
+    if (!insideMenu && closeMenus()) render();
+
+    const view = closest(target, "[data-view]");
+    if (view) {
+      setView(view.dataset.view as View);
+      return;
+    }
+
+    const chatButton = closest(target, "[data-chat]");
+    if (chatButton) {
+      openChat(chatButton.dataset.chat ?? "");
+      return;
+    }
+    const chatMenu = closest(target, "[data-chat-menu]");
+    if (chatMenu) {
+      const id = chatMenu.dataset.chatMenu ?? "";
+      state.menuChatId = state.menuChatId === id ? undefined : id;
+      render();
+      return;
+    }
+    const rename = closest(target, "[data-chat-rename]");
+    if (rename) {
+      state.renamingChatId = rename.dataset.chatRename;
+      state.menuChatId = undefined;
+      focusTarget = "#renameInput";
+      render();
+      return;
+    }
+    const remove = closest(target, "[data-chat-delete]");
+    if (remove) {
+      const id = remove.dataset.chatDelete ?? "";
+      const chat = state.chats.find((entry) => entry.id === id);
+      state.menuChatId = undefined;
+      if (chat && window.confirm(`Delete "${chat.title}"? This cannot be undone.`)) deleteChat(id);
+      else render();
+      return;
+    }
+
+    const mode = closest(target, "[data-mode]");
+    if (mode) {
+      state.mode = mode.dataset.mode as ReasoningMode;
+      storageSet("veda:mode", state.mode);
+      state.modelOpen = false;
+      render();
+      return;
+    }
+
+    const attachment = closest(target, ".remove-attachment");
+    if (attachment) {
+      state.attachments = state.attachments.filter((file) => file.id !== attachment.dataset.attachment);
+      render();
+      return;
+    }
+
+    const install = closest(target, ".install-doc");
+    if (install) {
+      void installDocsetBlocking(install.dataset.docset ?? "");
+      return;
+    }
+    const removeDoc = closest(target, ".remove-doc");
+    if (removeDoc) {
+      void removeDocsetBlocking(removeDoc.dataset.docset ?? "");
+      return;
+    }
+    const source = closest(target, "[data-source]");
+    if (source) {
+      void openSource(source.dataset.source ?? "");
+      return;
+    }
+    const quant = closest(target, "[data-quant]");
+    if (quant) {
+      state.selectedQuant = quant.dataset.quant as "q5" | "q8";
+      render();
+      return;
+    }
+    const setupDoc = closest(target, "[data-setup-doc]");
+    if (setupDoc) {
+      const id = setupDoc.dataset.setupDoc ?? "";
+      if (state.setupDocsets.has(id)) state.setupDocsets.delete(id);
+      else state.setupDocsets.add(id);
+      render();
+      return;
+    }
+
+    const id = (target as HTMLElement | null)?.closest<HTMLElement>("[id]")?.id;
+    switch (id) {
+      case "newChat":
+        startNewChat();
+        return;
+      case "wordmark":
+        if (state.sidebarCollapsed) {
+          state.sidebarCollapsed = false;
+          storageSet("veda:sidebar", "open");
+          render();
+        }
+        return;
+      case "collapseSidebar":
+        state.sidebarCollapsed = !state.sidebarCollapsed;
+        storageSet("veda:sidebar", state.sidebarCollapsed ? "collapsed" : "open");
+        render();
+        return;
+      case "themeToggle":
+      case "settingsTheme":
+        toggleTheme();
+        return;
+      case "settingsMode":
+        state.mode = state.mode === "fast" ? "think" : "fast";
+        storageSet("veda:mode", state.mode);
+        render();
+        return;
+      case "settingsButton":
+        state.settingsOpen = true;
+        render();
+        return;
+      case "closeSettings":
+        state.settingsOpen = false;
+        render();
+        return;
+      case "settingsBackdrop":
+        if (event.target === event.currentTarget || (event.target as HTMLElement).id === "settingsBackdrop") {
+          state.settingsOpen = false;
+          render();
+        }
+        return;
+      case "clearHistory":
+        if (window.confirm("Delete every saved chat on this device?")) {
+          for (const request of pending.values()) request.controller.abort();
+          pending.clear();
+          state.chats = [createChat()];
+          state.activeChatId = state.chats[0].id;
+          composerDraft = "";
+          persistChats();
+          render();
+          toast("Chat history cleared.");
+        }
+        return;
+      case "modelButton":
+        state.scopeOpen = false;
+        state.modelOpen = !state.modelOpen;
+        render();
+        return;
+      case "scopeButton":
+        state.modelOpen = false;
+        state.scopeOpen = !state.scopeOpen;
+        render();
+        return;
+      case "sendButton":
+        void sendMessage();
+        return;
+      case "stopButton":
+        stopGenerating();
+        return;
+      case "attachButton":
+        document.querySelector<HTMLInputElement>("#fileInput")?.click();
+        return;
+      case "closeReader":
+        state.reader = undefined;
+        state.readerLoading = false;
+        render();
+        return;
+      case "readerBackdrop":
+        if ((event.target as HTMLElement).id === "readerBackdrop") {
+          state.reader = undefined;
+          state.readerLoading = false;
+          render();
+        }
+        return;
+      case "dataFolder":
+      case "settingsDataFolder":
+        void bridge.revealDataFolder().catch((error: unknown) => toast(`Could not open the data folder: ${errorText(error)}`));
+        return;
+      case "retryDocsets":
+        void loadDocsets().then(render);
+        return;
+      case "retryDownloads":
+        void loadDownloads().then(render);
+        return;
+      case "setupBack":
+        state.setupStep = Math.max(0, state.setupStep - 1);
+        render();
+        return;
+      case "setupNext":
+        if (state.setupStep < 2) {
+          state.setupStep += 1;
+          render();
+        } else void runSetup();
+        return;
+      case "setupRetry":
+        state.setupError = undefined;
+        void runSetup();
+        return;
+      case "setupCancelError":
+        state.setupError = undefined;
+        state.setupRunning = false;
+        state.setupStep = 2;
+        render();
+        return;
+      default:
+        break;
+    }
+  });
+
+  app.addEventListener("input", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.id === "composerInput") {
+      const input = target as HTMLTextAreaElement;
+      composerDraft = input.value;
+      autoGrow(input);
+      return;
+    }
+    if (target.id === "docSearch") {
+      const query = (target as HTMLInputElement).value.trim().toLowerCase();
+      document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
+        card.hidden = Boolean(query) && !(card.dataset.docFilter ?? "").includes(query);
+      });
+      return;
+    }
+    if (target.id === "contextRange" || target.id === "contextNumber") {
+      setContext(Number((target as HTMLInputElement).value));
+      // The paired control and the label are updated directly so dragging the
+      // slider stays smooth and never fights the user's pointer.
+      const range = document.querySelector<HTMLInputElement>("#contextRange");
+      const number = document.querySelector<HTMLInputElement>("#contextNumber");
+      if (range && range !== target) range.value = String(state.contextTokens);
+      if (number && number !== target) number.value = String(state.contextTokens);
+      const detail = document.querySelector<HTMLElement>("#contextDetail");
+      const recommended = state.preflight?.recommendedContext;
+      if (detail) {
+        detail.textContent = `${contextLabel(state.contextTokens)}${state.contextTokens <= 0 && recommended ? ` · ${recommended.toLocaleString()} on this device` : ""}`;
+      }
+    }
+  });
+
+  app.addEventListener(
+    "change",
+    (event) => {
+      const target = event.target as HTMLInputElement;
+      if (target.id === "fileInput" && target.files) void addFiles(target.files);
+    },
+    true,
+  );
+
+  app.addEventListener("keydown", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.id === "composerInput") {
+      // Ignore Enter while an IME is composing (CJK input), and ignore
+      // repeats so a held key can't fire the request twice.
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.repeat) return;
+      event.preventDefault();
+      void sendMessage();
+      return;
+    }
+    if (target.id === "renameInput") {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        renameChat(target.dataset.rename ?? "", (target as HTMLInputElement).value);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        state.renamingChatId = undefined;
+        render();
+      }
+    }
+  });
+
+  // Committing a rename on blur avoids stranding the field open.
+  app.addEventListener(
+    "blur",
+    (event) => {
+      const target = event.target as HTMLElement;
+      if (target.id === "renameInput" && state.renamingChatId) {
+        renameChat(target.dataset.rename ?? "", (target as HTMLInputElement).value);
+      }
+    },
+    true,
+  );
+
+  // Escape closes transient surfaces (menus, source reader, settings).
+  // The onboarding flow intentionally stays open until setup completes.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (closeMenus()) {
+      render();
+      return;
+    }
+    if (state.renamingChatId) {
+      state.renamingChatId = undefined;
+      render();
+      return;
+    }
+    if (state.reader || state.readerLoading) {
+      state.reader = undefined;
+      state.readerLoading = false;
+      render();
+      return;
+    }
+    if (state.settingsOpen) {
+      state.settingsOpen = false;
+      render();
+    }
+  });
+}
 
 async function init(): Promise<void> {
+  bindGlobalEvents();
   render();
-  const [preflight, docsets, downloads] = await Promise.all([bridge.preflight(), bridge.docsets(), bridge.downloads()]);
-  state.preflight = preflight;
+
+  // Each source is awaited independently: a single failure must never leave
+  // the Docs or Downloads pages permanently blank.
+  const results = await Promise.allSettled([bridge.preflight(), bridge.docsets(), bridge.downloads()]);
+  const [preflightResult, docsetsResult, downloadsResult] = results;
+
+  if (preflightResult.status === "fulfilled") state.preflight = preflightResult.value;
+  if (docsetsResult.status === "fulfilled") state.docsets = docsetsResult.value;
+  else state.docsetsError = errorText(docsetsResult.reason);
+  if (downloadsResult.status === "fulfilled") state.downloads = downloadsResult.value;
+  else state.downloadsError = errorText(downloadsResult.reason);
+
+  const downloads = state.downloads;
   state.selectedQuant = downloads.some((item) => item.id === "minicpm5-q8" && item.state === "installed")
     ? "q8"
-    : downloads.some((item) => item.id === "minicpm5-q5" && item.state === "installed") ? "q5" : preflight.recommendedQuant;
-  state.docsets = docsets;
-  state.downloads = downloads;
+    : downloads.some((item) => item.id === "minicpm5-q5" && item.state === "installed")
+      ? "q5"
+      : (state.preflight?.recommendedQuant ?? "q5");
+
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
-  const docsReady = docsets.some(isDocInstalled);
+  const docsReady = state.docsets.some(isDocInstalled);
   if (bridge.isDesktop() && (!modelReady || !docsReady)) {
     storageRemove("veda:onboarded");
     state.onboardingOpen = true;
   }
-  await bridge.onDownloadProgress((item) => {
-    const existing = state.downloads.findIndex((download) => download.id === item.id);
-    if (existing >= 0) state.downloads[existing] = item; else state.downloads.push(item);
-    const docId = item.id.endsWith("-index") ? item.id.slice(0, -6) : undefined;
-    const doc = docId ? state.docsets.find((candidate) => candidate.id === docId) : undefined;
-    if (doc) {
-      doc.progress = item.progress;
-      doc.state = item.state === "installed" ? "installed" : "indexing";
-    }
-    if (state.setupRunning) {
-      updateSetupProgress(item.detail || item.name, item.progress);
-      if (document.querySelector("#setupProgressBar")) return;
-    }
-    scheduleRender();
-  });
+
+  try {
+    await bridge.onDownloadProgress((item) => {
+      const existing = state.downloads.findIndex((download) => download.id === item.id);
+      if (existing >= 0) state.downloads[existing] = item;
+      else state.downloads.push(item);
+      const docId = item.id.endsWith("-index") ? item.id.slice(0, -6) : undefined;
+      const doc = docId ? state.docsets.find((candidate) => candidate.id === docId) : undefined;
+      if (doc) {
+        doc.progress = item.progress;
+        doc.state = item.state === "installed" ? "installed" : "indexing";
+      }
+      if (state.setupRunning) updateSetupProgress(item.detail || item.name, item.progress);
+      scheduleRender();
+    });
+  } catch (error) {
+    console.error("Veda could not subscribe to download progress:", error);
+  }
+
   render();
 }
 
 void init();
+
+// Exposed for the automated UI tests, which drive the real module rather than
+// a reimplementation of it.
+export const __test = {
+  state,
+  render,
+  pending,
+  contextMax: CONTEXT_MAX,
+};
