@@ -648,6 +648,16 @@ describe("Q5 default, Q8 gating and setup failures", () => {
     expect(reloaded.__test.state.selectedQuant).toBe("q8");
   });
 
+  it("clamps a stored q8 choice on a machine below the floor and keeps storage truthful", async () => {
+    localStorage.setItem("veda:quant", "q8");
+    const mod: any = await loadApp({
+      keepStorage: true,
+      bridge: (actual) => ({ ...actual, preflight: async () => ({ ...(await actual.preflight()), totalMemoryBytes: 8 * 1024 ** 3 }) }),
+    });
+    expect(mod.__test.state.selectedQuant).toBe("q5");
+    expect(localStorage.getItem("veda:quant")).toBe("q5");
+  });
+
   it("shows the setup failure with guidance and returns Back to the model step", async () => {
     await loadApp({
       onboarded: false,

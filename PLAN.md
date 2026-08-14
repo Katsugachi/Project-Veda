@@ -75,3 +75,84 @@ available memory. As before, the Rust toolchain cannot be installed in this
 sandbox, so the Rust tests are written but executed by CI (`cargo test
 --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo
 fmt --all -- --check`).
+
+---
+
+## Round 3 — validation audit (post-merge scan)
+
+A full pass over the UI, the Rust crates and the desktop command layer, with
+the new default/gating/context behaviour exercised by additional probes.
+
+### Issues found and fixed
+
+| # | Finding | Fix | Verified by |
+|---|---------|-----|-------------|
+| 18 | `ask_veda` read `available_memory()` from a `System` that was never explicitly refreshed (unlike `resources.rs`, which calls `refresh_memory()` first); a stale/zero figure would poison the automatic context | Added `system.refresh_memory()` before reading available memory | code review; CI |
+| 19 | The markdown renderer turned any `[label](url)` into an `<a href>`; assistant text and retrieved docs are explicitly untrusted, so `javascript:`/`vbscript:`/`data:` URLs were one layer from clickable | Links now render only for `http:`, `https:` and `mailto:`; anything else stays inert text | `no-regressions.test.ts` "only links safe schemes" |
+| 20 | When the stored quant was no longer installed (or Q8 fell below the 12 GiB floor), `init()` fell back in state but left a stale `veda:quant` in localStorage | `init()` persists the resolved quant whenever the stored one was not honoured; fresh installs stay unset until the user chooses | `regression.test.ts` "clamps a stored q8 choice…" |
+| 21 | `ui/src/mock.ts` used invented download ids (`model`, `embeddings`) instead of the real catalog ids (`minicpm5-q5`, `bge-small-q8`) | Aligned the ids with the catalog | tsc + build |
+
+### Known issues reviewed and deliberately left (with reasoning)
+
+* **llama.cpp sidecar port race** (`veda-runtime/src/sidecar.rs`): `free_port()`
+  binds a listener, reads the port, then releases it before the child binds,
+  so two concurrent requests (one per chat, which the UI permits) can be handed
+  the same port; the child that loses the race exits with "address already in
+  use" and one request fails with a clear error. Rare and self-limiting, but a
+  real race. Suggested fix (not applied — Rust cannot be compiled in this
+  sandbox and CI should validate it):
+
+  ```rust
+  pub async fn spawn(config: SidecarConfig) -> Result<Self, SidecarError> {
+      let mut attempts = 0;
+      loop {
+          match Self::spawn_once(&config).await {
+              Ok(sidecar) => return Ok(sidecar),
+              Err(error) if attempts < 2 && is_bind_collision(&error) => {
+                  attempts += 1;
+              }
+              Err(error) => return Err(error),
+          }
+      }
+  }
+
+  fn is_bind_collision(error: &SidecarError) -> bool {
+      matches!(
+          error,
+          SidecarError::EarlyExit { log, .. }
+              if log.to_ascii_lowercase().contains("address already in use")
+                  || log.to_ascii_lowercase().contains("wsaeaddrinuse")
+      )
+  }
+  ```
+  (`spawn` becomes `spawn_once`; the health loop, log tail and stop behaviour
+  stay untouched.)
+
+* **Embedding inputs capped at 400 bytes** (`MAX_EMBEDDING_INPUT_BYTES`): every
+  doc chunk is embedded from its first 400 bytes. Deliberate: it keeps every
+  input below the 512-token physical micro-batch even for byte-token fallback.
+  Raising it would improve retrieval quality but needs runtime validation with
+  the actual tokenizer, so it stays.
+
+* **`DownloadError::Cancelled` is never constructed** — dead variant, harmless.
+
+* **Lexical and vector search are full O(N) scans per query** — fine at the
+  current scale (a few thousand chunks per docset); a real limit only if packs
+  grow by orders of magnitude.
+
+* **Evidence can exceed very small automatic contexts** (e.g. 512 tokens on a
+  heavily loaded low-RAM machine). llama.cpp truncates the prompt rather than
+  failing, and the preflight already warns below 3 GiB available, so this is
+  a graceful degradation, not a crash.
+
+* **Catalog SHA-256s could not be re-verified live**: the sandbox blocks all
+  outbound traffic except the npm registry, so the pinned runtime/model hashes
+  are trusted as shipped.
+
+### Result
+
+```
+tsc --noEmit      clean
+vitest run        96 passed (96)
+vite build        built in 295ms
+```

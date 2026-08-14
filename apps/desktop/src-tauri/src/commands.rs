@@ -237,6 +237,7 @@ pub async fn ask_veda(
         });
     }
     let mut system = sysinfo::System::new_all();
+    system.refresh_memory();
     let available_memory = system.available_memory();
     let quant = if model
         .file_name()

@@ -1398,6 +1398,12 @@ async function init(): Promise<void> {
   if (state.selectedQuant === "q8" && !q8Supported()) {
     state.selectedQuant = "q5";
     storageSet("veda:quant", "q5");
+  } else if ((storedQuant === "q5" || storedQuant === "q8") && !installedModel(storedQuant)) {
+    // The stored preference is no longer backed by an installed model, so the
+    // fallback is what is actually in use; record it so later reads do not
+    // misreport a stale choice. Fresh installs stay unset until the user
+    // picks a model themselves.
+    storageSet("veda:quant", state.selectedQuant);
   }
 
   const modelReady = downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");

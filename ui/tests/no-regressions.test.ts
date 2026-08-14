@@ -351,6 +351,16 @@ describe("pure helpers", () => {
     expect(renderMarkdown("<img src=x onerror=alert(1)>")).not.toContain("<img");
   });
 
+  it("only links safe schemes; javascript and friends stay inert", () => {
+    expect(renderMarkdown("[docs](https://docs.python.org)")).toContain('<a href="https://docs.python.org"');
+    expect(renderMarkdown("[mail](mailto:hi@example.com)")).toContain('<a href="mailto:hi@example.com"');
+    const unsafe = renderMarkdown("[x](javascript:alert(1))");
+    expect(unsafe).not.toContain("<a ");
+    expect(unsafe).toContain("javascript:alert(1)"); // shown as inert text, not a link
+    expect(renderMarkdown("[x](vbscript:msgbox(1))")).not.toContain("<a ");
+    expect(renderMarkdown("[x](data:text/html,x)")).not.toContain("<a ");
+  });
+
   it("derives chat titles", () => {
     expect(deriveTitle("  hello   world ")).toBe("hello world");
     expect(deriveTitle("")).toBe("New chat");
