@@ -89,7 +89,7 @@ impl LlamaSidecar {
         // a fresh port a couple of times before surfacing the error.
         let mut attempts = 0_u32;
         loop {
-            match spawn_once(config.clone()).await {
+            match Self::spawn_once(config.clone()).await {
                 Ok(sidecar) => return Ok(sidecar),
                 Err(error) if attempts < 2 && is_bind_collision(&error) => {
                     attempts += 1;
