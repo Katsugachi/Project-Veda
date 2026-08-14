@@ -156,3 +156,34 @@ tsc --noEmit      clean
 vitest run        96 passed (96)
 vite build        built in 295ms
 ```
+
+---
+
+## Round 4 — second audit (thorough review)
+
+Fixes from a fresh full pass over the UI, the Rust crates and the desktop layer.
+
+| # | Finding | Fix | Verified by |
+|---|---------|-----|-------------|
+| 22 | The model actually loaded by `ask_veda` could disagree with Settings: when *both* `Q8_0` and `Q5_K_M` files were on disk (e.g. after switching quant mid-setup), the backend hardcoded Q8-first, while Settings reported the stored quant | `AskRequest` gained a defaulted `model_quant`; the UI sends `state.selectedQuant`; the backend now tries the requested quant's file first and falls back to the other installed model | `commands.rs` unit test `model_files_put_the_requested_quant_first`; `regression.test.ts` "sends the selected model quant…" |
+| 23 | Concurrent asks (one per chat, which the UI permits) could spawn two llama.cpp sidecars that collide on the same probe port; the loser failed with "address already in use" | `LlamaSidecar::spawn` retries on a fresh port (twice) when the log tail shows a bind collision, before surfacing the error | `sidecar.rs` unit test `bind_collision_is_detected_from_the_log_tail` |
+| 24 | The Docs search filter was applied straight to the DOM, so any re-render (download progress, theme toggle) silently cleared it while the query stayed in the box | Filtering moved into a single `applyDocFilter()` re-applied after every render; the input handler delegates to it | `regression.test.ts` "keeps the docs filter applied across a re-render" |
+| 25 | The backend's preflight `warnings` (e.g. "Less than 3 GiB of memory is currently available…", directly relevant to the available-RAM context sizing) were computed but never shown | The system-check step now renders warning rows | `regression.test.ts` "surfaces preflight warnings…" |
+
+Re-reviewed and confirmed sound (no change): `parse_html`/`parse_markdown`
+(no JS execution), the docset ZIP extraction (`enclosed_name` guard + tar-rs
+unpack), download resume/verify flow, chat persistence round-trip, the morph
+renderer, and the `number-input`/slider context controls.
+
+### Result
+
+```
+tsc --noEmit      clean
+vitest run        99 passed (99)
+vite build        built in 315ms
+```
+
+Rust: `model_files` and `is_bind_collision` are pure and unit-tested; the
+`AskRequest` field is `#[serde(default)]` so older clients and the browser
+preview remain compatible. As before, the Rust toolchain is unavailable in
+this sandbox, so the Rust tests run in CI (`cargo fmt/test/clippy`).

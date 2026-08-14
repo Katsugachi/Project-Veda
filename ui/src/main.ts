@@ -514,12 +514,14 @@ function renderOnboardingBody(): string {
     const hasFailures = Boolean(report?.hardFailures.length);
     const ramStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("memory")) ? "fail" : "ok";
     const diskStatus = hasFailures && report?.hardFailures.some((value) => value.toLowerCase().includes("disk")) ? "fail" : "ok";
+    const warnings = report?.warnings ?? [];
     return `<div class="onboarding-kicker">System check</div><h1>Check this device</h1><p class="onboarding-lead">Before downloading, Veda checks available memory and storage. At least 10 GB of free SSD space is required.</p>
       <div class="preflight-list">
         ${report ? checkRow("memory", "Memory and context", `Recommended context: ${report.recommendedContext.toLocaleString()} tokens`, bytes(report.totalMemoryBytes), ramStatus) : checkRow("memory", "Memory and context", "Checking available RAM…", "—", "warn")}
         ${report ? checkRow("drive", "Fast local storage", "10 GB minimum free space", `${bytes(report.freeDiskBytes)} · ${report.diskKind.toUpperCase()}`, diskStatus) : checkRow("drive", "Fast local storage", "Checking disk and free space…", "—", "warn")}
         ${report ? checkRow("chip", "Native runtime", `${report.operatingSystem} · ${report.architecture}`, "Auto-detect", "ok") : checkRow("chip", "Native runtime", "Finding the best llama.cpp build…", "—", "warn")}
-      </div>`;
+      </div>
+      ${warnings.length ? `<div class="preflight-warnings">${warnings.map((warning) => `<div class="preflight-warning">${icon("chip")}${escapeHtml(warning)}</div>`).join("")}</div>` : ""}`;
   }
   if (state.setupStep === 1) {
     const q8Disabled = !q8Supported();
@@ -635,6 +637,7 @@ function render(): void {
       `<div class="app-shell${state.sidebarCollapsed ? " sidebar-collapsed" : ""}" data-key="shell">${renderSidebar()}<main class="main">${renderTopbar()}<div class="view">${view}</div></main></div>${renderSettings()}${renderReader()}${renderOnboarding()}${renderToasts()}`,
     );
     syncComposer();
+    applyDocFilter();
     focusPendingInput();
     if (activeChat().messages.length) requestAnimationFrame(scrollIfNewContent);
   } catch (error) {
@@ -648,6 +651,19 @@ function syncComposer(): void {
   if (!composer) return;
   if (composer.value !== composerDraft) composer.value = composerDraft;
   autoGrow(composer);
+}
+
+// The docs filter is applied straight to the DOM so typing stays snappy. A
+// later re-render (a download progress event, a theme toggle, …) rebuilds the
+// cards, which would silently clear the filtering; re-applying after every
+// render keeps the query and the visible cards in step.
+function applyDocFilter(): void {
+  const input = document.querySelector<HTMLInputElement>("#docSearch");
+  if (!input) return;
+  const query = input.value.trim().toLowerCase();
+  document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
+    card.hidden = Boolean(query) && !(card.dataset.docFilter ?? "").includes(query);
+  });
 }
 
 function autoGrow(element: HTMLTextAreaElement): void {
@@ -970,6 +986,7 @@ async function sendMessage(): Promise<void> {
       docsets: state.docsets.filter(isDocInstalled).map((doc) => doc.id),
       attachments,
       contextTokens: state.contextTokens,
+      modelQuant: state.selectedQuant,
       signal: controller.signal,
     });
     // The reply is written into the store, so it lands even if the user is on
@@ -1275,10 +1292,7 @@ function bindGlobalEvents(): void {
       return;
     }
     if (target.id === "docSearch") {
-      const query = (target as HTMLInputElement).value.trim().toLowerCase();
-      document.querySelectorAll<HTMLElement>("[data-doc-filter]").forEach((card) => {
-        card.hidden = Boolean(query) && !(card.dataset.docFilter ?? "").includes(query);
-      });
+      applyDocFilter();
       return;
     }
     if (target.id === "contextRange" || target.id === "contextNumber") {

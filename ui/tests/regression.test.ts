@@ -648,6 +648,55 @@ describe("Q5 default, Q8 gating and setup failures", () => {
     expect(reloaded.__test.state.selectedQuant).toBe("q8");
   });
 
+  it("surfaces preflight warnings (e.g. low available memory) on the system check", async () => {
+    await loadApp({
+      onboarded: false,
+      bridge: (actual) => ({
+        ...actual,
+        preflight: async () => ({
+          ...(await actual.preflight()),
+          warnings: ["Less than 3 GiB of memory is currently available; close other apps before loading the model."],
+        }),
+      }),
+    });
+    expect(bodyText()).toContain("Check this device");
+    expect(bodyText()).toContain("Less than 3 GiB of memory is currently available");
+    expect($$(".preflight-warning").length).toBe(1);
+  });
+
+  it("sends the selected model quant with each request so the backend loads the same model Settings shows", async () => {
+    let seen: string | undefined;
+    await loadApp({
+      bridge: (actual) => ({
+        ...actual,
+        ask: (request: any) => {
+          seen = request.modelQuant;
+          return actual.ask(request);
+        },
+      }),
+    });
+    await sendAndWait("hello");
+    expect(seen).toBe("q5");
+  });
+
+  it("keeps the docs filter applied across a re-render", async () => {
+    const mod: any = await loadApp();
+    click('[data-view="docs"]');
+    await flush(20);
+    type("#docSearch", "python");
+    await flush(10);
+    expect($$('.doc-card:not([hidden])').length).toBe(1);
+    // A re-render (download progress, theme toggle, …) must not silently
+    // clear the filter that is still showing in the search box.
+    mod.__test.render();
+    mod.__test.render();
+    expect($$('.doc-card:not([hidden])').length).toBe(1);
+    // Clearing the box restores every card.
+    type("#docSearch", "");
+    await flush(10);
+    expect($$('.doc-card:not([hidden])').length).toBe(5);
+  });
+
   it("clamps a stored q8 choice on a machine below the floor and keeps storage truthful", async () => {
     localStorage.setItem("veda:quant", "q8");
     const mod: any = await loadApp({

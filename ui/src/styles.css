@@ -330,6 +330,9 @@ html[data-theme="light"] .send-button.stopping { color: #fff; }
 .preflight-name { font-size: 11.5px; font-weight: 660; }
 .preflight-detail { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .preflight-value { color: var(--text-soft); font-size: 11px; text-align: right; }
+.preflight-warnings { margin-top: 14px; display: grid; gap: 7px; }
+.preflight-warning { display: flex; align-items: flex-start; gap: 8px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--warn) 8%, transparent); color: var(--text-soft); font-size: 10.5px; line-height: 1.5; }
+.preflight-warning .icon { width: 13px; height: 13px; color: var(--warn); margin-top: 1px; }
 .option-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 23px; }
 .option-card { position: relative; border: 1px solid var(--border); background: var(--bg); color: var(--text-soft); border-radius: 14px; padding: 15px; cursor: pointer; text-align: left; }
 .option-card:hover { border-color: var(--border-strong); }

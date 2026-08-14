@@ -1,3 +1,4 @@
+use crate::ModelQuant;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -62,6 +63,10 @@ pub struct AskRequest {
     /// automatically from this machine's memory".
     #[serde(default)]
     pub context_tokens: Option<u32>,
+    /// The model quantization the UI is configured for. `None` falls back to
+    /// the first installed model file.
+    #[serde(default)]
+    pub model_quant: Option<ModelQuant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
