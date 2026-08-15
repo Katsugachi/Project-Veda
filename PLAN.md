@@ -246,3 +246,27 @@ All four commits are on `arena/019ffefc-project-veda`; the head commit
   depends on generated impls (e.g. `serde_json::to_vec(&x)` where `x` must be
   `Serialize`) is not fully exercised — but CI's `cargo test --workspace` and
   `cargo clippy` now compile the real dependency tree and pass.
+
+---
+
+## Round 6 — mode control cleanup, "Verified and ready" removal, Docs tab reachability
+
+Reported symptoms and what changed:
+
+| # | Symptom | Root cause | Fix | Verified by |
+|---|---------|-----------|-----|-------------|
+| 26 | The Think/Fast chip and the brain/bolt SVGs clutter the model button; it should just say "MiniCPM 5" or "MiniCPM 5 Think" | The composer button rendered a filled `.mode-tag` chip with the mode name plus a brain/bolt icon, and the mode menu rows carried brain/bolt icons too | The chip and both icons are gone. The button reads **MiniCPM 5** (fast) or **MiniCPM 5 Think** (think) with only the chevron affordance; the mode menu stays switchable (text + checkmark, no icons) | `regression.test.ts` "Issue 26 — …" (button text, no `.mode-tag` in DOM or CSS, single SVG, no bolt path; menu has no `.popover-item-icon`) |
+| 27 | "Verified and ready" is unnecessary filler in the Downloads list | The model download rows hardcoded `detail: "Verified and ready"` in the preview mocks and the desktop command layer | The detail is now empty for model rows everywhere (bridge mock, mock data, `commands.rs`, `resources.rs`) | `regression.test.ts` "still shows the name, detail, progress and state of each row" now asserts the phrase never appears while a row with real detail still renders |
+| 28 | The Docs tab can't be viewed / "searches docs indefinitely" — the app sat behind the setup modal forever | On the desktop, a missing model/docs forced `onboardingOpen = true` on **every** launch and the modal had no dismiss path, so the whole app (Docs included) was locked behind setup; a stalled initial `docsets()` load would also leave Docs on "Loading documentation…" forever with no way out | (a) Onboarding gained **"Skip for now"**, which is remembered (`veda:onboarding-skipped`) so the modal never re-traps the app; Docs/Downloads work fine without the model. (b) The initial bridge loads race a 15 s timeout, so a stuck call becomes a recoverable error state with a Retry button instead of an eternal spinner. (c) Settings shows **"Set up Veda"** whenever the model is missing, which reopens the full setup flow and clears the skip flag | `regression.test.ts` "Issue 27 — …" (skip → Docs browsable → docset install works → skip survives a restart; Settings offers setup when the model is absent and reopens the system check) |
+
+### Result
+
+```
+tsc --noEmit      clean
+vitest run        103 passed (103)
+vite build        built in ~380ms
+```
+
+Rust: two one-line string-literal changes (`"Verified and ready".into()` → `String::new()`) in
+`commands.rs` and `resources.rs`; no behavioural change, covered by CI (`cargo fmt/test/clippy`)
+as before.

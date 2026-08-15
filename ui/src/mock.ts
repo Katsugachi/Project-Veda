@@ -22,7 +22,7 @@ export const initialDocsets: Docset[] = [
 ];
 
 export const initialDownloads: DownloadItem[] = [
-  { id: "minicpm5-q5", name: "MiniCPM 5 · Q5", detail: "Verified and ready", state: "installed", progress: 100, downloadedBytes: 786862688, totalBytes: 786862688 },
+  { id: "minicpm5-q5", name: "MiniCPM 5 · Q5", detail: "", state: "installed", progress: 100, downloadedBytes: 786862688, totalBytes: 786862688 },
   { id: "bge-small-q8", name: "Offline search", detail: "Ready", state: "installed", progress: 100, downloadedBytes: 36806944, totalBytes: 36806944 },
   { id: "python", name: "Python 3.14.7", detail: "571 pages indexed", state: "installed", progress: 100, downloadedBytes: 16_737_282, totalBytes: 16_737_282 },
   { id: "cpp", name: "cppreference", detail: "6,640 pages indexed", state: "installed", progress: 100, downloadedBytes: 55_740_889, totalBytes: 55_740_889 },
