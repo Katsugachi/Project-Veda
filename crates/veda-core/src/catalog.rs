@@ -98,7 +98,7 @@ pub fn default_catalog() -> Catalog {
                 docset: None,
                 source_subdir: None,
             },
-            docset_source("python-source-3.14.7", "Python 3.14.7 documentation", crate::DocsetId::Python, "https://docs.python.org/3/archives/python-3.14-docs-html.zip", "31c7bce213b11de08ccbbbd6dede078264532d0d04ae4980c0e331a22bfbb685", 16_737_282, "python-3.14-docs-html", "PSF-2.0"),
+            docset_source("python-source-3.14.7", "Python 3.14.7 documentation", crate::DocsetId::Python, "https://docs.python.org/3/archives/python-3.14-docs-html.zip", "31c7bce213b11de08ccbbbd6dede078264532d0d04ae4980c0e331a22bfbb685", 16_740_440, "python-3.14-docs-html", "PSF-2.0"),
             docset_source("cppreference-source-20250209", "cppreference 2025-02-09", crate::DocsetId::Cpp, "https://github.com/PeterFeicht/cppreference-doc/releases/download/v20250209/html-book-20250209.zip", "5389f2635f1417f05319b11f065ceecd1a8442c9143e2c127409137396b0c81c", 55_740_889, "reference/en", "CC-BY-SA-3.0 AND GFDL-1.3-no-invariants-or-later"),
             docset_source("mdn-html-source-20260812", "MDN HTML 2026-08-12", crate::DocsetId::Html, "https://github.com/mdn/content/archive/83cd10f1d5850fdde087ae7e399810723bead4d3.zip", "1a5d2d615980a4b124f7898d65eabfa8884521d5f4b1d2a0f1ab372f3779d7ef", 73_684_713, "content-83cd10f1d5850fdde087ae7e399810723bead4d3/files/en-us/web/html", "CC-BY-SA-2.5"),
             docset_source("mdn-css-source-20260812", "MDN CSS 2026-08-12", crate::DocsetId::Css, "https://github.com/mdn/content/archive/83cd10f1d5850fdde087ae7e399810723bead4d3.zip", "1a5d2d615980a4b124f7898d65eabfa8884521d5f4b1d2a0f1ab372f3779d7ef", 73_684_713, "content-83cd10f1d5850fdde087ae7e399810723bead4d3/files/en-us/web/css", "CC-BY-SA-2.5"),
