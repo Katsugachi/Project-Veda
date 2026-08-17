@@ -33,6 +33,19 @@ pub struct SessionFingerprint {
     pub quant: ModelQuant,
 }
 
+impl SessionFingerprint {
+    /// True when the two fingerprints differ only in context size. The
+    /// automatic context is estimated from *available* RAM, which wobbles by a
+    /// few megabytes between questions; treating a one-kiloton step as a new
+    /// configuration would otherwise re-read the ~750 MB model on every ask.
+    pub fn same_except_context(&self, other: &SessionFingerprint) -> bool {
+        self.model_path == other.model_path
+            && self.gpu_layers == other.gpu_layers
+            && self.backend == other.backend
+            && self.quant == other.quant
+    }
+}
+
 pub struct EmbeddingSession {
     pub sidecar: LlamaSidecar,
     pub client: EmbeddingClient,
@@ -172,8 +185,44 @@ pub async fn session_janitor(handle: SessionHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_evict, IDLE_EVICT_AFTER};
+    use super::{should_evict, SessionFingerprint, IDLE_EVICT_AFTER};
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
+    use veda_core::ModelQuant;
+
+    fn fingerprint(model: &str, context: u32, backend: &str) -> SessionFingerprint {
+        SessionFingerprint {
+            model_path: PathBuf::from(model),
+            context_tokens: context,
+            gpu_layers: 99,
+            backend: backend.into(),
+            quant: ModelQuant::Q5,
+        }
+    }
+
+    #[test]
+    fn reuse_tolerates_a_smaller_requested_context() {
+        let base = fingerprint("model.gguf", 131_072, "vulkan");
+        let smaller = fingerprint("model.gguf", 16_384, "vulkan");
+        assert!(base.same_except_context(&smaller));
+        assert!(base.context_tokens >= smaller.context_tokens);
+
+        // A different model, backend or GPU configuration must still rebuild.
+        assert!(!base.same_except_context(&fingerprint("other.gguf", 131_072, "vulkan")));
+        assert!(!base.same_except_context(&fingerprint("model.gguf", 131_072, "cpu")));
+        assert!(!base.same_except_context(&fingerprint("model.gguf", 131_072, "cuda")));
+    }
+
+    #[test]
+    fn smaller_session_cannot_serve_a_larger_context() {
+        let small = fingerprint("model.gguf", 16_384, "vulkan");
+        let larger = fingerprint("model.gguf", 131_072, "vulkan");
+        // Same model/backend, so `same_except_context` alone would allow reuse…
+        assert!(small.same_except_context(&larger));
+        // …but the caller's headroom guard (`existing.context_tokens >= wanted`)
+        // must fail here, because a smaller KV cache cannot hold a larger ask.
+        assert!(small.context_tokens < larger.context_tokens);
+    }
 
     #[test]
     fn idle_eviction_threshold_is_strict() {

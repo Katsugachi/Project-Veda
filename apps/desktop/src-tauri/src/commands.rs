@@ -272,9 +272,21 @@ pub async fn ask_veda(
     let conversational = request.attachments.is_empty() && is_conversational(&request.message);
 
     // Reuse the warm session, or rebuild it when the configuration changed.
+    // A session whose configuration matches — or differs only in having *more*
+    // context than the ask needs — is reused: llama.cpp cannot resize context
+    // in place, but extra headroom is always safe, and this stops the auto
+    // context (sized from available RAM, which wobbles by a few MB between
+    // questions) from re-reading the model on every single ask.
     let mut slot = state.runtime.lock().await;
     let mut session = match slot.take() {
-        Some(existing) if existing.matches(&fingerprint) => Some(existing),
+        Some(mut existing)
+            if existing.matches(&fingerprint)
+                || (existing.fingerprint.same_except_context(&fingerprint)
+                    && existing.fingerprint.context_tokens >= fingerprint.context_tokens) =>
+        {
+            existing.touch();
+            Some(existing)
+        }
         Some(mut stale) => {
             stale.stop_all().await;
             None
