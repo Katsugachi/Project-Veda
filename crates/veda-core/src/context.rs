@@ -23,8 +23,14 @@ pub struct ContextBudget {
 
 /// The largest context the UI may request.
 pub const CONTEXT_TOKENS_MAX: u32 = 131_072;
-/// The smallest context that is still useful for a sourced answer.
+/// The smallest context that is still useful for a sourced answer, used as the
+/// floor for an explicit hand-typed value.
 pub const CONTEXT_TOKENS_MIN: u32 = 512;
+/// The hard floor for the **automatic** ("0 / Auto") context. Regardless of how
+/// little memory is free, Veda never asks llama.cpp for a sub-16K context,
+/// because the RAG evidence plus a sourced answer routinely needs that much
+/// room and a tiny context silently truncates the grounding material.
+pub const CONTEXT_TOKENS_DEFAULT_MIN: u32 = 16_384;
 
 /// Resolves a user-requested context against what this machine can support.
 ///
@@ -54,7 +60,11 @@ pub fn resolve_context_tokens(
 /// overhead. The largest whole number of tokens whose KV cache fits in the
 /// RAM left after reserving the 1.4 GB leeway and the model itself is
 /// chosen, rounded down to the UI's 1K step and capped at MiniCPM's
-/// advertised ceiling.
+/// advertised ceiling. The result is never below
+/// [`CONTEXT_TOKENS_DEFAULT_MIN`] (16K) regardless of how little RAM is
+/// available: a sourced answer needs at least that much room, so a
+/// memory-starved machine degrades to the floor instead of being handed an
+/// unusably small context.
 pub fn context_budget(available_memory_bytes: u64, quant: ModelQuant) -> ContextBudget {
     let model_bytes = match quant {
         ModelQuant::Q5 => 1_300_000_000,
@@ -66,8 +76,10 @@ pub fn context_budget(available_memory_bytes: u64, quant: ModelQuant) -> Context
     let kv_per_token_with_overhead = kv_per_token * 5 / 4;
     let raw_tokens = usable_for_kv / kv_per_token_with_overhead;
     let stepped = raw_tokens / 1024 * 1024;
-    let context_tokens =
-        stepped.clamp(u64::from(CONTEXT_TOKENS_MIN), u64::from(CONTEXT_TOKENS_MAX)) as u32;
+    let context_tokens = stepped.clamp(
+        u64::from(CONTEXT_TOKENS_DEFAULT_MIN),
+        u64::from(CONTEXT_TOKENS_MAX),
+    ) as u32;
     let estimated_kv_bytes = kv_per_token_with_overhead * u64::from(context_tokens);
     ContextBudget {
         context_tokens,
@@ -133,15 +145,46 @@ mod tests {
             context_budget(16 * GIB, ModelQuant::Q5).context_tokens,
             CONTEXT_TOKENS_MAX
         );
-        // No memory left after leeway + model falls back to the floor.
+        // The automatic context never drops below the 16K floor, no matter how
+        // little memory is available — it degrades to the floor rather than an
+        // unusably tiny window.
         assert_eq!(
             context_budget(2 * GIB, ModelQuant::Q8).context_tokens,
-            CONTEXT_TOKENS_MIN
+            CONTEXT_TOKENS_DEFAULT_MIN
+        );
+    }
+
+    #[test]
+    fn automatic_context_has_a_16k_floor_regardless_of_ram() {
+        // Zero, near-zero and "no headroom after leeway + model" all clamp up
+        // to the 16K default floor rather than collapsing to a useless context.
+        assert_eq!(context_budget(0, ModelQuant::Q5).context_tokens, 16_384);
+        assert_eq!(context_budget(1, ModelQuant::Q5).context_tokens, 16_384);
+        assert_eq!(
+            context_budget(2 * GIB, ModelQuant::Q8).context_tokens,
+            16_384
+        );
+        // resolve_context_tokens honours the same floor on the automatic path.
+        assert_eq!(
+            resolve_context_tokens(None, 0, ModelQuant::Q5),
+            CONTEXT_TOKENS_DEFAULT_MIN
+        );
+        assert_eq!(
+            resolve_context_tokens(Some(0), 0, ModelQuant::Q8),
+            CONTEXT_TOKENS_DEFAULT_MIN
+        );
+        // An explicit hand-typed value below 16K is still honoured (clamped to
+        // the per-entry minimum of 512) — only the automatic path is floored.
+        assert_eq!(
+            resolve_context_tokens(Some(2_048), 0, ModelQuant::Q5),
+            2_048
         );
     }
 
     #[test]
     fn context_grows_with_available_ram() {
+        // Skip the sub-floor region: start above the 16K default minimum so
+        // the comparison reflects the budgeted growth, not the floor clamp.
         let small = context_budget(3 * GIB, ModelQuant::Q5).context_tokens;
         let medium = context_budget(4 * GIB, ModelQuant::Q5).context_tokens;
         let large = context_budget(5 * GIB, ModelQuant::Q5).context_tokens;

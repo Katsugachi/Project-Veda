@@ -9,8 +9,8 @@ MacOS
 ## Targets
 
 - macOS 12+ universal DMG: Intel and Apple Silicon application shell; native Metal runtime selected after launch.
-- Windows 10 22H2+ x64 NSIS Setup EXE.
-- Windows 11 ARM64 NSIS Setup EXE with a native ARM64 Veda application.
+- Windows 10 22H2+ x64 NSIS Setup EXE. NVIDIA GPUs use the CUDA runtime; everything else uses Vulkan.
+- Windows 11 ARM64 NSIS Setup EXE with a native ARM64 Veda application. Snapdragon X (Adreno) GPUs use the OpenCL Adreno runtime for hardware acceleration; the CPU runtime remains the automatic fallback when no usable GPU is present.
 
 The Windows installer creates a **Veda** Start Menu folder. Public builds are intentionally unsigned for now; signing and Apple notarization can be added through release secrets later.
 
@@ -22,7 +22,7 @@ Setup does not download resources unless all hard requirements pass:
 - SSD strongly recommended; an HDD or unknown drive produces a warning.
 - **Q5:** 6 GiB hard memory floor, 8 GiB recommended. Q5 is the default model on every device.
 - **Q8:** 12 GiB memory floor. The setup screen disables Q8 on machines below the floor so setup cannot fail later.
-- Automatic context is sized to the memory that is **actually available right now** (total RAM minus what other apps are using), with a 1.4 GB safety margin reserved for the OS and other applications. It picks the largest context whose KV cache fits in the remaining RAM, capped at MiniCPM's 131K ceiling. The explicit setting in Settings overrides it.
+- Automatic context is sized to the memory that is **actually available right now** (total RAM minus what other apps are using), with a 1.4 GB safety margin reserved for the OS and other applications. It picks the largest context whose KV cache fits in the remaining RAM, capped at MiniCPM's 131K ceiling, but never below a **16,384-token floor** regardless of how little memory is free — a sourced answer needs at least that much room, so a busy low-RAM machine degrades to 16K rather than an unusably tiny window. The explicit setting in Settings overrides it.
 
 ## Pinned model assets
 

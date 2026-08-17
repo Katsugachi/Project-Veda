@@ -799,11 +799,18 @@ describe("Issue 27 — the Docs tab is reachable even when setup is not complete
     expect($$(".doc-card").length).toBe(5);
     expect($(".library-summary")!.textContent).toMatch(/installed pages across \d+ docsets/);
 
-    // Downloads still work after skipping setup.
+    // Downloads still work after skipping setup, and stay inline on the Docs
+    // tab instead of reopening the first-run modal.
     const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
     expect(install).toBeTruthy();
+    expect($(".onboarding")).toBeNull();
     install.click();
-    await waitFor(() => !$(".onboarding"), 12000);
+    await flush(20);
+    expect($(".onboarding")).toBeNull();
+    await waitFor(() => {
+      const card = $$(".doc-card").find((c) => c.textContent?.includes("HTML"));
+      return Boolean(card?.textContent?.includes("Installed"));
+    }, 12000);
     const htmlCard = $$(".doc-card").find((card) => card.textContent?.includes("HTML"))!;
     expect(htmlCard.textContent).toContain("Installed");
 
@@ -834,5 +841,44 @@ describe("Issue 27 — the Docs tab is reachable even when setup is not complete
     expect($(".onboarding")).toBeTruthy();
     expect(bodyText()).toContain("Check this device");
     expect(localStorage.getItem("veda:onboarding-skipped")).toBeNull();
+  });
+});
+
+describe("Docs install/remove can never trap the app", () => {
+  it("keeps the Docs tab inline during an install and never opens the onboarding modal", async () => {
+    await loadApp({ onboarded: false });
+    click("#setupSkip");
+    await flush(20);
+    click('[data-view="docs"]');
+    await flush(20);
+    const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
+    install.click();
+    await flush(20);
+    // The first-run modal must NOT be hijacked by a Docs-tab install.
+    expect($(".onboarding")).toBeNull();
+    // The card transitions to an in-progress state, not a stuck "Download".
+    const card = $$(".doc-card").find((c) => c.textContent?.includes("HTML"))!;
+    expect(/downloading|indexing/.test(card.className + card.textContent)).toBe(true);
+    await waitFor(() => Boolean($$(".doc-card").find((c) => c.textContent?.includes("HTML") && c.textContent?.includes("Installed"))), 12000);
+  });
+
+  it("recovers from a failed install without trapping or stranding the card", async () => {
+    await loadApp({
+      onboarded: true,
+      bridge: (actual) => ({
+        ...actual,
+        installDocset: (_id: string) => Promise.reject(new Error("embedding runtime missing")),
+      }),
+    });
+    click('[data-view="docs"]');
+    await flush(20);
+    const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
+    install.click();
+    await waitFor(() => bodyText().includes("Could not install HTML"), 4000);
+    // No modal, and the card is back to an actionable state (Download again).
+    expect($(".onboarding")).toBeNull();
+    const card = $$(".doc-card").find((c) => c.textContent?.includes("HTML"))!;
+    expect(card.textContent).not.toContain("downloading");
+    expect($$(".doc-card").find((c) => c.textContent?.includes("HTML"))!.querySelector(".install-doc")).toBeTruthy();
   });
 });

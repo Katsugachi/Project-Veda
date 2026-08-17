@@ -223,10 +223,18 @@ describe("docs install and remove", () => {
     await loadApp();
     click('[data-view="docs"]');
     await flush(20);
+    // The install stays inline on the Docs tab: it must never trap the app
+    // behind the first-run onboarding modal.
+    expect($(".onboarding")).toBeNull();
     const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
     expect(install).toBeTruthy();
     install.click();
-    await waitFor(() => !$(".onboarding"), 12000);
+    await flush(20);
+    expect($(".onboarding")).toBeNull();
+    await waitFor(() => {
+      const card = $$(".doc-card").find((c) => c.textContent?.includes("HTML"));
+      return Boolean(card?.textContent?.includes("Installed"));
+    }, 12000);
     const htmlCard = $$(".doc-card").find((card) => card.textContent?.includes("HTML"))!;
     expect(htmlCard.textContent).toContain("Installed");
   });
@@ -236,9 +244,14 @@ describe("docs install and remove", () => {
     await loadApp();
     click('[data-view="docs"]');
     await flush(20);
-    // Two are installed by default; remove one, then the guard trips.
+    // Two are installed by default; remove one fully (wait for it to flip back
+    // to a Download button rather than the transient "Removing…" state), then
+    // the guard trips on the second removal.
     $$(".remove-doc")[0].click();
-    await waitFor(() => $$(".remove-doc").length === 1, 8000);
+    await waitFor(
+      () => !bodyText().includes("Removing…") && $$(".remove-doc").length === 1,
+      8000,
+    );
     $$(".remove-doc")[0].click();
     await waitFor(() => bodyText().includes("Keep at least one"), 3000);
     expect($$(".remove-doc").length).toBe(1);
