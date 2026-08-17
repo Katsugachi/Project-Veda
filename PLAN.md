@@ -308,3 +308,41 @@ cargo build -p veda-core -D warnings -A dead_code   clean
   the workspace's backend-selection logic; it cannot compile on this Linux sandbox, so
   it is covered by CI's `cargo fmt/test/clippy` on the real `aarch64-pc-windows-msvc`
   target (see `.github/workflows/release.yml` `windows-arm64` job).
+
+---
+
+## Round 8 — dropdown, latency, Docs tab, GPU-only installs, status verbs, citations
+
+Six reported regressions, each with a verified root cause and a real fix.
+
+| # | Symptom | Root cause | Fix | Verified by |
+|---|---------|-----------|-----|-------------|
+| 32 | The model/docs menu "goes off the screen" | `.popover` always drops **down** (`top: calc(100% + 8px)`) from its trigger; the trigger lives in the composer at the bottom edge of the chat view, so the menu renders past the bottom of the window. The only flip was a fixed `@media (max-height: 620px)` breakpoint that ignores real geometry | `placePopovers()` measures the anchor and viewport after every render (and on resize) and adds a `.flip-up` class that opens the menu **above** the trigger when there is no room below. The decision is a pure `popoverFlipsUp()` that prefers the side with more space | `round8.test.ts` ("flips up only when there is no room below…", "declares the upward-flip geometry in CSS") |
+| 33 | Every question (even "hi") took minutes | Every `ask_veda` spawned **two fresh llama.cpp sidecars** (chat ~750 MB + embedding ~37 MB), so each question re-read the model off disk; the search planner, the embedding sidecar and the search-index load all ran even for a greeting | A warm `ModelSession` (chat + lazily-created embedding sidecar) is kept in `AppState` and reused across requests, rebuilt only when the model/context/GPU/backend fingerprint changes; greetings take a **conversational fast path** (`is_conversational` + `CONVERSATIONAL_SYSTEM_PROMPT`) that skips planning, embedding and index loading entirely | `conversation.rs` tests (greetings match, technical questions never match); reviewed desktop path (compiled by CI) |
+| 34 | "Docs tab still doesn't work" — installs strand at 0% and fail after wasting bandwidth | (a) Only the `{docset}-index` pass reported progress, so the card sat at "downloading 0%" for the whole source download; (b) installing a pack without the model downloaded the source and only failed at embedding time | (a) `DownloadItem.docset` now tags both the source archive and the index pass, and the UI mirrors both onto the card; (b) the Docs tab shows a "Set up the local model" banner and routes a Download click into setup when the model is missing | `round8.test.ts` ("mirrors source-download progress…", "asks the user to set up the model…") |
+| 35 | Setup downloads **CPU and GPU** runtimes | On a failed GPU health probe the fallback installed the CPU runtime but **left the failed accelerated runtime (and its CUDA library dependency) on disk**, so the device ended up with both backends installed | Backend selection now walks a chain (`cuda → vulkan → cpu`; `opencl-adreno → cpu`; macOS `metal` only), and every failed runtime — including its `RuntimeDependency` like `cudart` — is **retired** (directory + download record) so exactly one backend ever remains | `next_backend` unit test in `resources.rs` (compiled by CI) |
+| 36 | "Searching Installed Docs…" is a terrible default | The reply rendered one static string for the whole request | The streaming placeholder now rotates through Claude-style verbs (Pondering, Thinking, Planning the search, Searching installed docs, Reading sources, Crystallising, Substituting, Composing, Verifying citations) with a spinner, advanced only while a reply is actually streaming | `round8.test.ts` ("rotates status verbs…", "exposes every expected stage…") |
+| 37 | Citations are inert | Inline `[S1]` markers were rendered as a plain `<strong>`, so clicking them did nothing | Inline citations render as a clickable `.inline-cite` button carrying `data-cite`, which opens the matching source in the reader; the source chips at the bottom still work | `round8.test.ts` ("renders inline [S1] as a clickable citation button", "opens the source when an inline citation is clicked") |
+
+### Verification (real tools, this sandbox)
+
+```
+tsc --noEmit                                    clean
+vitest run                                      114 passed (114)   (was 105; +9 Round-8 tests)
+vite build                                      built in 375 ms
+cargo test -p veda-core (Rust 1.88, offline)    21 passed (0 failed)  incl. new conversation + prompt tests
+rustfmt --check (all touched Rust files)        clean
+```
+
+* The UI is verified with the real module under jsdom; the nine new tests prove the
+  dropdown flip decision, the status rotation, clickable citations, the Docs model
+  gate and the doc-card download progress.
+* `veda-core` (where `is_conversational` and the new prompt live) was compiled and
+  tested with a real `rustc`/`cargo` 1.88 toolchain installed from `@rustbin`, against
+  minimal offline `serde` stubs (crates.io is unreachable in this sandbox). The lone
+  `dead_code` note on `default_result_count` is a stub artefact — the real `serde`
+  derive references it, so CI's `cargo clippy -D warnings` does not see it.
+* The desktop crate (`commands.rs`, `resources.rs`, `state.rs`, `session.rs`) depends on
+  Tauri and cannot compile on this Linux sandbox; its changes are rustfmt-clean, contain
+  a new `next_backend` unit test, and are covered by CI's `cargo fmt/test/clippy` on the
+  real targets (see `.github/workflows/release.yml`).

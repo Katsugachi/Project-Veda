@@ -41,7 +41,13 @@ Hybrid retrieval uses the small BGE English v1.5 Q8 GGUF through the same llama.
 
 ## Model-directed Hybrid RAG
 
-A question follows this local pipeline:
+A greeting or plain small talk takes a **conversational fast path**: it is answered
+directly by the already-loaded model with no search plan, embedding or index load, so
+"hi" returns immediately. The chat model (and, once needed, the embedding model) stay
+loaded between questions and are only reloaded when the model, context or backend
+changes.
+
+A technical question follows this local pipeline:
 
 1. MiniCPM receives the search-planner system prompt and returns a bounded JSON plan with up to four queries, docset scopes and exact symbols.
 2. Rust validates that plan.

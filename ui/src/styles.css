@@ -195,10 +195,20 @@ button { color: inherit; }
 .stream-caret { display: inline-block; width: 6px; height: 16px; margin-left: 3px; vertical-align: -3px; background: var(--accent); border-radius: 2px; animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* The rotating activity line shown while an answer streams. */
+.assistant-status { display: flex; align-items: center; gap: 9px; color: var(--text-soft); }
+.status-spinner { width: 12px; height: 12px; flex: 0 0 auto; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+.status-text { transition: opacity .18s var(--ease); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .message-sources { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
 .source-chip { appearance: none; border: 1px solid var(--border); background: var(--raised); color: var(--text-soft); cursor: pointer; height: 28px; padding: 0 9px; border-radius: 8px; display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
 .source-chip:hover { color: var(--text); border-color: var(--border-strong); }
 .source-n { color: var(--accent); font-weight: 750; }
+/* Inline [S1]-style citations inside an answer: clickable, opening the source. */
+.inline-cite { appearance: none; border: 0; background: transparent; padding: 0; color: var(--accent); font: inherit; font-weight: 750; cursor: pointer; border-radius: 4px; }
+.inline-cite:hover { text-decoration: underline; }
+.inline-cite:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .attachment-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 .attachment-chip { display: flex; align-items: center; gap: 7px; max-width: 220px; height: 29px; padding: 0 9px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -244,6 +254,10 @@ html[data-theme="light"] .send-button.stopping { color: #fff; }
 .resource-detail { margin-top: 4px; color: var(--muted); font-size: 11px; }
 .resource-stat { color: var(--text-soft); font-size: 11.5px; margin-right: 8px; }
 
+.setup-required { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 13px 15px; margin: -6px 0 18px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.setup-required-title { color: var(--text); font-size: 12px; font-weight: 640; }
+.setup-required-detail { margin-top: 4px; color: var(--muted); font-size: 10.5px; line-height: 1.5; max-width: 640px; }
+
 .doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .doc-card { border: 1px solid var(--border); border-radius: 15px; background: var(--raised); padding: 17px; min-width: 0; transition: border-color .15s, transform .15s; }
 .doc-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
@@ -286,11 +300,10 @@ html[data-theme="light"] .send-button.stopping { color: #fff; }
 .popover { position: absolute; top: calc(100% + 8px); min-width: 232px; padding: 7px; border: 1px solid var(--border); background: var(--raised); border-radius: 13px; box-shadow: var(--shadow); z-index: 30; transform-origin: top center; }
 .mode-popover { right: 0; }
 .scope-popover { left: 0; max-height: 280px; overflow-y: auto; }
-/* Near the bottom of the window the menu flips above the trigger so it is
-   never clipped by the viewport. */
-@media (max-height: 620px) {
-  .popover { top: auto; bottom: calc(100% + 8px); transform-origin: bottom center; }
-}
+/* When the trigger sits near the bottom of the viewport (the composer does),
+   `placePopovers()` adds this class so the menu opens upward and stays fully
+   on screen instead of running off the bottom edge. */
+.popover.flip-up { top: auto; bottom: calc(100% + 8px); transform-origin: bottom center; }
 .popover-empty { padding: 10px 9px; color: var(--muted); font-size: 11px; }
 .popover-item.static { cursor: default; }
 .popover-item.static:hover { background: transparent; color: var(--text-soft); }

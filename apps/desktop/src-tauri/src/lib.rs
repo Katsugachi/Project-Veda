@@ -1,5 +1,6 @@
 mod commands;
 mod resources;
+mod session;
 mod state;
 
 use state::AppState;
