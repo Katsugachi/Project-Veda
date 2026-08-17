@@ -164,7 +164,9 @@ pub async fn session_janitor(handle: SessionHandle) {
     loop {
         interval.tick().await;
         let mut slot = handle.lock().await;
-        evict_if_idle(&mut *slot).await;
+        // `&mut slot` coerces to `&mut Option<ModelSession>` through the
+        // guard's DerefMut; the explicit `*` would trip clippy::explicit_auto_deref.
+        evict_if_idle(&mut slot).await;
     }
 }
 
