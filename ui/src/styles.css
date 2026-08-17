@@ -130,6 +130,9 @@ button { color: inherit; }
 .recent-wrap:hover .recent-more, .recent-wrap.menu-open .recent-more, .recent-more:focus-visible { opacity: 1; }
 .recent-more:hover { background: var(--border); color: var(--text); }
 .recent-menu { position: absolute; top: calc(100% + 4px); right: 4px; z-index: 40; min-width: 148px; padding: 5px; border: 1px solid var(--border); background: var(--raised); border-radius: 8px; box-shadow: var(--shadow); }
+/* The chat-options menu lives inside the scrolling sidebar list, so it flips
+   above its row (and clamps its height) when there is no room below. */
+.recent-menu.flip-up { top: auto; bottom: calc(100% + 4px); }
 .recent-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--text-soft); cursor: pointer; padding: 7px 8px; border-radius: 6px; font-size: 12px; text-align: left; }
 .recent-menu-item:hover { background: var(--hover); color: var(--text); }
 .recent-menu-item.danger { color: var(--danger); }

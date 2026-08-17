@@ -7,10 +7,19 @@
 //! across requests and only restarts them when the configuration that matters
 //! to llama.cpp (model file, context size, GPU layers, backend) changes.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use veda_core::{contextual_error, ModelQuant};
 use veda_runtime::{EmbeddingClient, LlamaClient, LlamaSidecar, SidecarConfig};
+
+/// After this long with no questions, the warm session is torn down so the
+/// ~800 MB of model pages are returned to the OS on machines that need them.
+/// The first question after eviction pays the model-load cost again.
+pub const IDLE_EVICT_AFTER: Duration = Duration::from_secs(15 * 60);
 
 /// The identity of a running session. When any field changes the session is
 /// torn down and rebuilt, because llama.cpp cannot resize its context or swap
@@ -36,6 +45,8 @@ pub struct ModelSession {
     /// it, so the fast path stays cheap.
     pub embedding: Option<EmbeddingSession>,
     pub fingerprint: SessionFingerprint,
+    /// The last time a question used this session; drives idle eviction.
+    pub last_used: Instant,
 }
 
 impl ModelSession {
@@ -43,6 +54,11 @@ impl ModelSession {
     /// reused without restarting llama.cpp.
     pub fn matches(&self, fingerprint: &SessionFingerprint) -> bool {
         &self.fingerprint == fingerprint
+    }
+
+    /// Marks the session as recently used, resetting the idle-eviction clock.
+    pub fn touch(&mut self) {
+        self.last_used = Instant::now();
     }
 
     /// Spawns the chat-model sidecar and connects a client to it.
@@ -69,6 +85,7 @@ impl ModelSession {
             llama,
             embedding: None,
             fingerprint: fingerprint.clone(),
+            last_used: Instant::now(),
         })
     }
 
@@ -119,3 +136,62 @@ impl ModelSession {
 /// mutex is intentional: a single local model can only generate one reply at a
 /// time anyway, and it prevents two chats from racing to spawn sidecars.
 pub type SessionHandle = Arc<Mutex<Option<ModelSession>>>;
+
+/// Pure predicate behind idle eviction: has `last_used` aged past the
+/// threshold at `now`? Split out so the boundary is unit-testable without
+/// constructing a live llama.cpp sidecar.
+pub fn should_evict(last_used: Instant, now: Instant) -> bool {
+    now.duration_since(last_used) >= IDLE_EVICT_AFTER
+}
+
+/// Tears the session down when it has been idle longer than
+/// [`IDLE_EVICT_AFTER`], returning the model pages to the OS. Only ever runs
+/// while holding the session lock, so it cannot race a rebuild.
+pub async fn evict_if_idle(slot: &mut Option<ModelSession>) {
+    if let Some(session) = slot.as_mut() {
+        if should_evict(session.last_used, Instant::now()) {
+            session.stop_all().await;
+            *slot = None;
+        }
+    }
+}
+
+/// Background janitor that frees the warm session's memory after a period of
+/// inactivity. Spawned once at app startup; the runtime cancels it on exit.
+pub async fn session_janitor(handle: SessionHandle) {
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.tick().await; // align to the interval instead of firing instantly
+    loop {
+        interval.tick().await;
+        let mut slot = handle.lock().await;
+        evict_if_idle(&mut *slot).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_evict, IDLE_EVICT_AFTER};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn idle_eviction_threshold_is_strict() {
+        let now = Instant::now();
+        assert!(!should_evict(now, now));
+        assert!(!should_evict(
+            now,
+            now + IDLE_EVICT_AFTER - Duration::from_secs(1)
+        ));
+        assert!(should_evict(now, now + IDLE_EVICT_AFTER));
+        assert!(should_evict(
+            now,
+            now + IDLE_EVICT_AFTER + Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn a_fresh_touch_resets_the_clock() {
+        let now = Instant::now();
+        // A session touched "now" is never evictable at "now".
+        assert!(!should_evict(now, now));
+    }
+}

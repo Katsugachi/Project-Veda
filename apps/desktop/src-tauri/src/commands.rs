@@ -306,6 +306,7 @@ pub async fn ask_veda(
             )
             .await
             .map_err(|error| contextual_error("The local model could not answer", &error))?;
+        session.touch();
         *slot = Some(session);
         return Ok(AskResponse {
             message_id: uuid::Uuid::new_v4().to_string(),
@@ -322,6 +323,7 @@ pub async fn ask_veda(
 
     let index = load_search_index(&state, &request.docsets).await?;
     if index.is_empty() {
+        session.touch();
         *slot = Some(session);
         return Ok(AskResponse {
             message_id: uuid::Uuid::new_v4().to_string(),
@@ -350,6 +352,10 @@ pub async fn ask_veda(
         .ask(request)
         .await
         .map_err(|error| contextual_error("The local model could not answer", &error));
+    // Keep the warm session even when this answer failed (a transient model
+    // error should not discard ~800 MB of loaded pages), and refresh the idle
+    // clock so the janitor does not evict a session that is still in use.
+    session.touch();
     *slot = Some(session);
     result
 }

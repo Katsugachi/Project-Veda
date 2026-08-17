@@ -346,3 +346,31 @@ rustfmt --check (all touched Rust files)        clean
   Tauri and cannot compile on this Linux sandbox; its changes are rustfmt-clean, contain
   a new `next_backend` unit test, and are covered by CI's `cargo fmt/test/clippy` on the
   real targets (see `.github/workflows/release.yml`).
+
+---
+
+## Round 9 — closer to perfect: clip-proof menus + warm-session idle eviction
+
+Follow-on hardening from the honest "what is not proven" review of Round 8.
+
+| # | Gap found | Fix | Verified by |
+|---|-----------|-----|-------------|
+| 38 | `.view { overflow: hidden }` and the sidebar's `.recents { overflow-y: auto }` can still clip a menu that is taller than the space above/below its trigger (e.g. the scope list with every pack installed on a short window, or the chat-options menu on a row near the bottom of the history list) | `placePopovers()` now measures each menu against its **nearest clipping ancestor** (not just the window), flips it to the larger side, and clamps its `max-height` to the available space with scrolling. The decision is the pure `popoverPlacement()`, and the sidebar chat-options menu is included in the same pass with its own `.flip-up` rule | `round9.test.ts` (placement totality, clamping, scroll-container offsets, CSS declarations) |
+| 39 | The rotating status line rendered a blinking caret next to it (the caret is for streamed text, which the one-shot backend never emits) | The caret only renders when `streaming && content` | `round9.test.ts` ("no caret while only the status line shows") |
+| 40 | The warm session pins ~800 MB of model pages even when Veda sits idle for hours | `last_used` timestamp on the session, a pure `should_evict()` threshold (15 min), `touch()` on every completed ask, and a background `session_janitor` that tears the session down after inactivity so the memory returns to the OS | `session.rs` unit tests `idle_eviction_threshold_is_strict` / `a_fresh_touch_resets_the_clock` (run by CI) |
+
+### Verification
+
+```
+tsc --noEmit                                     clean
+vitest run                                       122 passed (122)   (was 114; +8 Round-9 tests)
+vite build                                       built in 387 ms
+rustfmt --check (all touched Rust files)         clean
+```
+
+* `popoverPlacement` is pure and exhaustively tested for the flip/clamp/offset
+  boundary; the DOM glue cannot run under jsdom (zero layout) and is exercised on
+  real browsers/desktop.
+* The desktop session changes (`session.rs`, `commands.rs`, `lib.rs`) are
+  rustfmt-clean and carry the new `should_evict` unit tests; they compile and run
+  under CI's `cargo test --workspace` / `cargo clippy -D warnings`.

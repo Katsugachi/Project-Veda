@@ -399,7 +399,7 @@ function renderMessage(message: ChatMessage): string {
     <div class="message-main">
       <div class="message-head">${message.role === "assistant" ? "Veda" : "You"}<span class="message-time">${timeLabel(message.createdAt)}</span></div>
       ${attachments}
-      <div class="message-body">${message.streaming && !message.content ? `<div class="assistant-status" data-key="status-${message.id}"><span class="status-spinner" aria-hidden="true"></span><span class="status-text">${escapeHtml(message.status ?? firstStatus())}</span></div>` : renderMarkdown(message.content)}${message.streaming ? '<span class="stream-caret"></span>' : ""}</div>
+      <div class="message-body">${message.streaming && !message.content ? `<div class="assistant-status" data-key="status-${message.id}"><span class="status-spinner" aria-hidden="true"></span><span class="status-text">${escapeHtml(message.status ?? firstStatus())}</span></div>` : renderMarkdown(message.content)}${message.streaming && message.content ? '<span class="stream-caret"></span>' : ""}</div>
       ${note}
       ${sourceMarkup}
     </div>
@@ -713,15 +713,80 @@ function popoverFlipsUp(
   return spaceAbove > spaceBelow;
 }
 
+interface PlacementInput {
+  anchorTop: number;
+  anchorBottom: number;
+  menuHeight: number;
+  viewportTop: number;
+  viewportBottom: number;
+  margin?: number;
+}
+
+interface PlacementResult {
+  flipUp: boolean;
+  /** Set when the menu must be height-clamped (with scrolling) to fit. */
+  maxHeight?: number;
+}
+
+/**
+ * Pure, unit-tested placement: where does the menu open, and how tall may it
+ * be? The menu flips above the trigger only when there is not enough room
+ * below, and its height is clamped to the available space so a tall menu (the
+ * scope list with every pack installed) scrolls instead of being clipped by
+ * the viewport's `overflow: hidden`.
+ */
+function popoverPlacement(input: PlacementInput): PlacementResult {
+  const margin = input.margin ?? 8;
+  const spaceBelow = input.viewportBottom - input.anchorBottom;
+  const spaceAbove = input.anchorTop - input.viewportTop;
+  let flipUp = false;
+  if (spaceBelow < input.menuHeight + margin) {
+    flipUp = spaceAbove >= input.menuHeight + margin || spaceAbove > spaceBelow;
+  }
+  const available = Math.max(spaceBelow, spaceAbove) - margin;
+  const maxHeight = input.menuHeight > available ? Math.max(0, available) : undefined;
+  return { flipUp, maxHeight };
+}
+
+/** The visible box that actually clips a menu: its nearest clipping ancestor. */
+function clipViewport(element: Element): { top: number; bottom: number } {
+  let node: HTMLElement | null = element.parentElement;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden") {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom };
+    }
+    node = node.parentElement;
+  }
+  return { top: 0, bottom: document.documentElement.clientHeight };
+}
+
 function placePopovers(): void {
   const viewportHeight = document.documentElement.clientHeight;
   if (!viewportHeight) return; // no real layout (e.g. jsdom)
-  for (const menu of Array.from(document.querySelectorAll<HTMLElement>(".popover"))) {
+  for (const menu of Array.from(document.querySelectorAll<HTMLElement>(".popover, .recent-menu"))) {
     const anchor = menu.parentElement;
     if (!anchor) continue;
+    // Measure the menu's natural height before clamping it.
+    menu.classList.remove("flip-up");
+    menu.style.maxHeight = "";
     const anchorRect = anchor.getBoundingClientRect();
-    const menuHeight = menu.getBoundingClientRect().height;
-    menu.classList.toggle("flip-up", popoverFlipsUp(anchorRect, menuHeight, viewportHeight));
+    const viewport = clipViewport(menu);
+    const placement = popoverPlacement({
+      anchorTop: anchorRect.top,
+      anchorBottom: anchorRect.bottom,
+      menuHeight: menu.getBoundingClientRect().height,
+      viewportTop: viewport.top,
+      viewportBottom: viewport.bottom,
+    });
+    menu.classList.toggle("flip-up", placement.flipUp);
+    if (placement.maxHeight !== undefined) {
+      menu.style.maxHeight = `${Math.floor(placement.maxHeight)}px`;
+      menu.style.overflowY = "auto";
+    } else {
+      menu.style.overflowY = "";
+    }
   }
 }
 
@@ -1719,4 +1784,5 @@ export const __test = {
   statusPhrases: STATUS_PHRASES,
   advanceStatuses,
   popoverFlipsUp,
+  popoverPlacement,
 };
