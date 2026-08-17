@@ -270,3 +270,41 @@ vite build        built in ~380ms
 Rust: two one-line string-literal changes (`"Verified and ready".into()` → `String::new()`) in
 `commands.rs` and `resources.rs`; no behavioural change, covered by CI (`cargo fmt/test/clippy`)
 as before.
+
+---
+
+## Round 7 — Docs-tab trap, 16K automatic context floor, GPU on ARM64 Windows
+
+Three reported regressions, each with a verified root cause and a real fix.
+
+| # | Symptom | Root cause | Fix | Verified by |
+|---|---------|-----------|-----|-------------|
+| 29 | "The Docs tab still does not work" — clicking Download/Remove in Docs reopened the **first-run setup modal** with `setupRunning = true`, whose footer renders *no buttons* ("Setup must finish before the rest of the app can be used") and which Escape explicitly will not close. So a slow or stalled desktop install (notably the CPU-only ARM64 runtime) **trapped the whole app**, and on failure the doc card was stranded on "downloading 0%" forever | `installDocsetBlocking` / `removeDocsetBlocking` hijacked the onboarding modal as a progress surface; there was no escape path, and the doc state was never reset on error | Both flows now stay **inline on the Docs tab** — the doc card's own `downloading`/`indexing`/`removing` state (already driven by the `download-progress` events) shows live progress, the install is guarded by an **inactivity** timeout (`withStallTimeout`, aborts only after 3 min with zero progress so a legitimately slow install — e.g. embedding C++'s 6,640 pages — is never wrongly killed) and removal by a generous 90 s fixed deadline, the card state is reset on error, and failures surface as a toast. The onboarding modal is now used only by genuine first-run setup. New `removing` state added to `docAction` and `InstallState` | `regression.test.ts` "Docs install/remove can never trap the app" (inline during install → no modal; failed install → toast + card reset, no trap, Download re-available); updated `no-regressions`/`regression` install tests to assert the inline card state instead of modal close |
+| 30 | "default context should be a minimal 16384 regardless of RAM" — on a busy/low-RAM machine the automatic context collapsed to the 512-token floor, truncating the RAG evidence so sourced answers were useless | `context_budget` clamped the automatic result to `[CONTEXT_TOKENS_MIN = 512, MAX]` | New `CONTEXT_TOKENS_DEFAULT_MIN = 16_384`; `context_budget` (the automatic/"0 = Auto" path) now floors at 16K **regardless of available RAM**, while an explicit hand-typed value still honours the 512 per-entry minimum. README + the `context_budget` doc comment updated | `context.rs` tests `automatic_context_has_a_16k_floor_regardless_of_ram` (0 / 1 B / 2 GiB Q8 all → 16,384; explicit 2048 still honoured) and the updated `automatic_context_fills_available_ram_with_leeway`; existing preflight `recommended_context` value (103,424 ≥ 16K) is unaffected |
+| 31 | "it uses CPU and not OpenCL llama.cpp for the engine on ARM64 Windows — must be GPU on ALL supported platforms" | `preferred_backend()` for `(windows, aarch64)` returned `"cpu"`, and no accelerated ARM64 runtime was catalogued, so Snapdragon X (Adreno) hardware ran entirely on the CPU | (a) Catalogued the pinned `llama-b10369-bin-win-opencl-adreno-arm64.zip` OpenCL Adreno runtime (SHA-256/size taken live from the GitHub release API: `4ad201f8…b9546c`, 13,019,982 B) alongside the existing CPU build as the fallback. (b) `preferred_backend()` for ARM64 Windows now returns `"opencl-adreno"`. The build is self-contained (no separate runtime dependency, like Vulkan), passes the real model-loading health probe with `--n-gpu-layers 99`, and rolls back to the CPU runtime when the device has no usable Adreno/OpenCL driver — so GPU works on Snapdragon X while non-Adreno ARM64 boxes still run. macOS = Metal, Windows x64 = CUDA/Vulkan, Windows ARM64 = OpenCL Adreno: **GPU on every supported platform** | `catalog.rs` test `arm64_windows_has_an_opencl_adreno_gpu_runtime`; the existing `== "cpu"` backend logic (`gpu_layers`, `accelerated`, fallback) covers `opencl-adreno` unchanged |
+
+### Verification (real tools, this sandbox)
+
+```
+tsc --noEmit                                    clean
+vitest run                                      105 passed (105)   (was 103; +2 Docs-trap tests)
+vite build                                      built in 354 ms
+cargo test -p veda-core (Rust 1.88, offline)    17 passed (0 failed)   incl. new catalog + context tests
+cargo build -p veda-core -D warnings -A dead_code   clean
+```
+
+* The UI is verified with the real module under jsdom (`vitest`); the two new tests
+  prove the Docs tab can never trap and always recovers from a failed/stalled install.
+* `veda-core` (where the context + catalog Rust changes live) was compiled and tested
+  with a real `rustc`/`cargo` 1.88 toolchain installed from `@rustbin`, against minimal
+  offline `serde` stubs (crates.io is unreachable in this sandbox). The lone
+  `dead_code` warning on `default_result_count` is a stub artefact — the real `serde`
+  derive references it, so CI's `cargo clippy -D warnings` does not see it.
+* The OpenCL Adreno runtime's pinned SHA-256 and byte size were read directly from the
+  GitHub Releases API for tag `b10369` and match the asset's `digest` field; they
+  cross-check against the API's digests for the already-catalogued CPU/CUDA/Vulkan
+  assets (which match the existing pinned hashes).
+* The desktop `preferred_backend` change is a `cfg`-gated one-liner reviewed against
+  the workspace's backend-selection logic; it cannot compile on this Linux sandbox, so
+  it is covered by CI's `cargo fmt/test/clippy` on the real `aarch64-pc-windows-msvc`
+  target (see `.github/workflows/release.yml` `windows-arm64` job).

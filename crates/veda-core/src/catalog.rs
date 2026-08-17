@@ -109,6 +109,7 @@ pub fn default_catalog() -> Catalog {
             runtime("llama-win-vulkan-x64", "windows-x64", "vulkan", format!("{runtime_base}/llama-b10369-bin-win-vulkan-x64.zip"), "862d0c017b6fcc3d8541bad0da051f535550b16fba162a5d94dadd754c5a07b7", 34_201_860),
             runtime("llama-win-cuda-x64", "windows-x64", "cuda", format!("{runtime_base}/llama-b10369-bin-win-cuda-12.4-x64.zip"), "5eca96bb069281deda8e882843193a605a7b0687c659c6b4123715a4f1642642", 250_748_190),
             runtime_dependency("cudart-win-cuda-x64", "windows-x64", "cuda", format!("{runtime_base}/cudart-llama-bin-win-cuda-12.4-x64.zip"), "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6", 391_443_627),
+            runtime("llama-win-opencl-adreno-arm64", "windows-arm64", "opencl-adreno", format!("{runtime_base}/llama-b10369-bin-win-opencl-adreno-arm64.zip"), "4ad201f8e3dbb71aa1d4e856961c91207582eabab36f17a2248aa49916b9546c", 13_019_982),
             runtime("llama-win-cpu-arm64", "windows-arm64", "cpu", format!("{runtime_base}/llama-b10369-bin-win-cpu-arm64.zip"), "e4654a6832ae05503962d7711821d025b13d7b410ece846f6db751158fb6fbb8", 12_290_971),
         ],
     }
@@ -194,5 +195,35 @@ mod tests {
         assert_eq!(q5.bytes, 786_862_688);
         assert_eq!(q5.sha256.len(), 64);
         assert!(q5.url.ends_with("minicpm5-1b-Q5_K_M.gguf"));
+    }
+
+    #[test]
+    fn arm64_windows_has_an_opencl_adreno_gpu_runtime() {
+        // ARM64 Windows (Snapdragon X) must ship a GPU runtime, not just the
+        // CPU build, so the engine is hardware-accelerated on every supported
+        // platform. The CPU build stays in the catalog as the health-probe
+        // fallback for machines without an Adreno GPU.
+        let catalog = default_catalog();
+        let gpu = catalog
+            .assets
+            .iter()
+            .find(|asset| {
+                asset.kind == AssetKind::LlamaRuntime
+                    && asset.platform.as_deref() == Some("windows-arm64")
+                    && asset.backend.as_deref() == Some("opencl-adreno")
+            })
+            .expect("an OpenCL Adreno runtime for Windows ARM64 must be catalogued");
+        assert_eq!(gpu.id, "llama-win-opencl-adreno-arm64");
+        assert!(gpu
+            .url
+            .ends_with("llama-b10369-bin-win-opencl-adreno-arm64.zip"));
+        assert_eq!(gpu.sha256.len(), 64);
+        assert!(gpu.bytes > 0);
+        // The CPU fallback is still catalogued so setup can roll back.
+        assert!(catalog.assets.iter().any(|asset| {
+            asset.kind == AssetKind::LlamaRuntime
+                && asset.platform.as_deref() == Some("windows-arm64")
+                && asset.backend.as_deref() == Some("cpu")
+        }));
     }
 }

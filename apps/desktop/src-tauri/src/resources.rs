@@ -557,9 +557,15 @@ async fn preferred_backend() -> &'static str {
     "metal"
 }
 
+// Windows on ARM64 (Snapdragon X and friends) runs the OpenCL Adreno build of
+// llama.cpp so the engine is GPU-accelerated like every other supported
+// platform. The build is self-contained (no separate runtime dependency), and
+// the setup health probe rolls back to the catalogued CPU runtime if the
+// device has no usable Adreno/OpenCL driver, so a non-Adreno ARM64 box still
+// works.
 #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
 async fn preferred_backend() -> &'static str {
-    "cpu"
+    "opencl-adreno"
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]

@@ -399,6 +399,8 @@ function docAction(doc: Docset): string {
   if (doc.state === "updateAvailable") {
     return `<div class="update-check">Update available</div><div class="doc-action-buttons"><button class="button remove-doc" data-docset="${doc.id}">Remove</button><button class="button primary install-doc" data-docset="${doc.id}">Update</button></div>`;
   }
+  if (doc.state === "removing")
+    return `<div class="progress-track"><div class="progress-value" style="width:100%"></div></div><span class="download-state">Removing…</span>`;
   if (doc.state === "downloading" || doc.state === "indexing")
     return `<div class="progress-track"><div class="progress-value" style="width:${doc.progress}%"></div></div><span class="download-state">${doc.state} ${Math.round(doc.progress)}%</span>`;
   return `<span></span><button class="button primary install-doc" data-docset="${doc.id}">${icon("download")} Download</button>`;
@@ -848,24 +850,41 @@ async function loadDownloads(): Promise<void> {
 
 async function installDocsetBlocking(id: string): Promise<void> {
   const doc = state.docsets.find((item) => item.id === id);
-  if (!doc || doc.state === "installed") return;
-  state.onboardingOpen = true;
-  state.setupRunning = true;
-  state.setupError = undefined;
-  state.setupProgress = 0;
-  state.setupStatus = `Preparing ${doc.name}…`;
+  if (!doc) return;
+  // An install already in flight is ignored so a second click can never stack
+  // two downloads of the same pack.
+  if (doc.state === "downloading" || doc.state === "indexing" || doc.state === "installed") return;
+  const previousState = doc.state;
+  // The doc card itself drives the live progress: the download-progress events
+  // update `doc.state`/`doc.progress` as the source downloads and the chunks
+  // are embedded. The user stays on the Docs tab the whole time — the full
+  // onboarding modal is reserved for first-run setup, never for managing an
+  // already-installed app, so a slow or stalled install can never lock the
+  // whole UI behind a modal with no escape.
   doc.state = "downloading";
+  doc.progress = 0;
   render();
   try {
-    await bridge.installDocset(id);
+    // A docset install can take minutes (a big archive plus embedding every
+    // chunk), so the guard is inactivity-based: it only aborts when the
+    // operation stops reporting progress, never simply because it is slow.
+    await withStallTimeout(
+      bridge.installDocset(id),
+      () => state.docsets.find((item) => item.id === id)?.progress ?? 0,
+      `Installing ${doc.name}`,
+    );
     await Promise.all([loadDocsets(), loadDownloads()]);
-    state.setupRunning = false;
-    state.onboardingOpen = false;
-    render();
   } catch (error) {
-    state.setupError = errorText(error);
-    state.setupRunning = false;
-    state.setupFailureStep = 2;
+    // Refresh from the source of truth and surface a recoverable toast. The
+    // card is never left stranded on "downloading 0%" if the install fails.
+    await Promise.all([loadDocsets(), loadDownloads()]);
+    const failed = state.docsets.find((item) => item.id === id);
+    if (failed && failed.state !== "installed") {
+      failed.state = previousState;
+      failed.progress = 0;
+    }
+    toast(`Could not install ${doc.name}: ${errorText(error)}`);
+  } finally {
     render();
   }
 }
@@ -877,30 +896,31 @@ function updateSetupProgress(status: string, progress = 0): void {
 
 async function removeDocsetBlocking(id: string): Promise<void> {
   const doc = state.docsets.find((item) => item.id === id);
-  if (!doc || !isDocInstalled(doc)) return;
+  if (!doc || !isDocInstalled(doc) || doc.state === "removing") return;
   if (state.docsets.filter(isDocInstalled).length <= 1) {
     toast("Keep at least one documentation pack installed.");
     return;
   }
   if (!window.confirm(`Remove ${doc.name} documentation from this device?`)) return;
 
-  state.onboardingOpen = true;
-  state.setupRunning = true;
-  state.setupError = undefined;
-  state.setupProgress = 0;
-  state.setupStatus = `Removing ${doc.name}…`;
+  // Removal happens inline on the Docs tab (the modal is only for first-run
+  // setup), so a stalled removal can never trap the rest of the app.
+  doc.state = "removing";
   render();
   try {
-    await bridge.removeDocset(id);
+    // Removal only deletes files (no embedding), so a generous fixed deadline
+    // is enough and never aborts a slow-but-working install.
+    await withTimeout(bridge.removeDocset(id), `Removing ${doc.name}`, 90_000);
     await Promise.all([loadDocsets(), loadDownloads()]);
-    state.setupRunning = false;
-    state.onboardingOpen = false;
-    render();
   } catch (error) {
-    state.setupRunning = false;
-    state.onboardingOpen = false;
-    render();
+    await Promise.all([loadDocsets(), loadDownloads()]);
+    const failed = state.docsets.find((item) => item.id === id);
+    if (failed && !isDocInstalled(failed) && failed.state === "removing") {
+      failed.state = "installed";
+    }
     toast(`Could not remove ${doc.name}: ${errorText(error)}`);
+  } finally {
+    render();
   }
 }
 
@@ -1417,6 +1437,54 @@ function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 15_00
       setTimeout(() => reject(new Error(`${label} took too long. Try again.`)), milliseconds);
     }),
   ]);
+}
+
+// A documentation install can legitimately run for many minutes (downloading a
+// large source archive, then embedding thousands of chunks). A fixed deadline
+// would wrongly abort a healthy-but-slow install, so this only rejects when the
+// operation goes quiet for `stallMs` — i.e. the source download stopped making
+// progress and the embedding batches stopped completing. `progress` reads the
+// live docset progress so it tracks whatever the backend last reported.
+function withStallTimeout<T>(
+  work: Promise<T>,
+  progress: () => number,
+  label: string,
+  stallMs = 180_000,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let lastProgress = progress();
+    let lastChange = Date.now();
+    const timer = window.setInterval(() => {
+      if (settled) return;
+      const current = progress();
+      if (current !== lastProgress) {
+        lastProgress = current;
+        lastChange = Date.now();
+        return;
+      }
+      if (Date.now() - lastChange >= stallMs) {
+        settled = true;
+        window.clearInterval(timer);
+        reject(new Error(`${label} stopped making progress. Try again.`));
+      }
+    }, 5_000);
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      window.clearInterval(timer);
+    };
+    work.then(
+      (value) => {
+        done();
+        resolve(value);
+      },
+      (error) => {
+        done();
+        reject(error);
+      },
+    );
+  });
 }
 
 async function init(): Promise<void> {
