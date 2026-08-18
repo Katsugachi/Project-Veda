@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { mockAsk } from "./mock";
-import type { AskRequest, AskResponse, Docset, DownloadItem, PreflightReport, ReaderSource } from "./types";
+import type { AskRequest, AskResponse, Docset, DownloadItem, LocalDocFile, PreflightReport, ReaderSource } from "./types";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -28,7 +28,7 @@ const browserPreflight: PreflightReport = {
   architecture: "arm64",
   operatingSystem: "Browser preview",
   recommendedQuant: "q5",
-  recommendedContext: 131072,
+  recommendedContext: 16384,
   hardFailures: [],
   warnings: ["This is a browser preview. Download the Veda desktop app to install local resources on this device."],
 };
@@ -127,16 +127,58 @@ export const bridge = {
     if (!doc || doc.state === "installed") return Promise.resolve();
     return simulatedInstall(doc.id, `${doc.name} ${doc.version}`, doc.compressedBytes);
   },
+  installLocalDocs: async (name: string, files: LocalDocFile[]): Promise<Docset> => {
+    if (isTauri()) return call<Docset>("install_local_docs", { name, files });
+    await delay(200);
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40) || "docs";
+    let id = `local-${slug}`;
+    let suffix = 2;
+    while (browserDocsets.some((doc) => doc.id === id)) {
+      id = `local-${slug}-${suffix}`;
+      suffix += 1;
+    }
+    const doc: Docset = {
+      id,
+      name,
+      detail: "Your documentation, searchable offline.",
+      version: "local",
+      compressedBytes: 0,
+      installedBytes: files.reduce((sum, file) => sum + file.content.length, 0),
+      state: "installed",
+      progress: 100,
+      pages: files.length,
+      accent: "#c4a574",
+      initials: "YO",
+    };
+    browserDocsets.push(doc);
+    return structuredClone(doc);
+  },
+  pickAndInstallLocalDocs: (): Promise<Docset | null> => {
+    if (isTauri()) return call<Docset | null>("pick_and_install_local_docs");
+    return Promise.resolve(null);
+  },
+  onAskToken: (handler: (event: { chatId: string; text: string }) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return listen<{ chatId: string; text: string }>("ask-token", (event) => handler(event.payload));
+    return Promise.resolve(() => undefined);
+  },
   removeDocset: async (id: string): Promise<void> => {
     if (isTauri()) return call<void>("remove_docset", { id });
     await delay(500);
-    const doc = browserDocsets.find((candidate) => candidate.id === id);
-    if (doc) {
-      doc.state = "available";
-      doc.progress = 0;
-      doc.installedBytes = 0;
-      doc.pages = undefined;
+    const index = browserDocsets.findIndex((candidate) => candidate.id === id);
+    if (index < 0) return;
+    if (id.startsWith("local-")) {
+      browserDocsets.splice(index, 1);
+      return;
     }
+    const doc = browserDocsets[index];
+    doc.state = "available";
+    doc.progress = 0;
+    doc.installedBytes = 0;
+    doc.pages = undefined;
   },
   ask: (request: AskRequest): Promise<AskResponse> => {
     // The abort signal is a UI-side concern: it must not be serialised into

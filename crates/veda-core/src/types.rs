@@ -1,17 +1,24 @@
 use crate::ModelQuant;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// Official language packs plus user-imported libraries.
+///
+/// User libraries serialize as `"local"` (and any unknown / `local-*` key
+/// deserializes as [`DocsetId::Local`]) so adding a custom pack never breaks
+/// the existing on-disk index format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DocsetId {
     Python,
     Cpp,
     Html,
     Css,
     Javascript,
+    Local,
 }
 
 impl DocsetId {
+    /// Catalogued language packs. User-imported libraries are discovered from
+    /// disk (`local-*.json.zst`) rather than listed here.
     pub const ALL: [Self; 5] = [
         Self::Python,
         Self::Cpp,
@@ -27,7 +34,49 @@ impl DocsetId {
             Self::Html => "html",
             Self::Css => "css",
             Self::Javascript => "javascript",
+            Self::Local => "local",
         }
+    }
+
+    pub const fn is_official(self) -> bool {
+        !matches!(self, Self::Local)
+    }
+
+    /// Parses a catalog or UI id. Official names map 1:1; anything else
+    /// (`local`, `local-notes`, a user-typed folder slug) is a local library.
+    pub fn from_key(value: &str) -> Self {
+        match value {
+            "python" => Self::Python,
+            "cpp" => Self::Cpp,
+            "html" => Self::Html,
+            "css" => Self::Css,
+            "javascript" => Self::Javascript,
+            _ => Self::Local,
+        }
+    }
+
+    pub fn parse_official(value: &str) -> Option<Self> {
+        match value {
+            "python" => Some(Self::Python),
+            "cpp" => Some(Self::Cpp),
+            "html" => Some(Self::Html),
+            "css" => Some(Self::Css),
+            "javascript" => Some(Self::Javascript),
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for DocsetId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DocsetId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Ok(Self::from_key(&value))
     }
 }
 
@@ -140,6 +189,19 @@ impl SearchQueryPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_and_unknown_keys_deserialize_as_local() {
+        assert_eq!(DocsetId::from_key("python"), DocsetId::Python);
+        assert_eq!(DocsetId::from_key("local"), DocsetId::Local);
+        assert_eq!(DocsetId::from_key("local-notes"), DocsetId::Local);
+        assert_eq!(DocsetId::parse_official("html"), Some(DocsetId::Html));
+        assert_eq!(DocsetId::parse_official("local-notes"), None);
+        let json = serde_json::to_string(&DocsetId::Local).unwrap();
+        assert_eq!(json, "\"local\"");
+        let back: DocsetId = serde_json::from_str("\"local-my-folder\"").unwrap();
+        assert_eq!(back, DocsetId::Local);
+    }
 
     #[test]
     fn planner_is_bounded() {

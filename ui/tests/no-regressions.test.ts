@@ -372,6 +372,15 @@ describe("pure helpers", () => {
     expect(unsafe).toContain("javascript:alert(1)"); // shown as inert text, not a link
     expect(renderMarkdown("[x](vbscript:msgbox(1))")).not.toContain("<a ");
     expect(renderMarkdown("[x](data:text/html,x)")).not.toContain("<a ");
+    // The whole markdown is escaped *before* links are rewritten, so a
+    // quote in the URL cannot break out of href. Do not escape the URL a
+    // second time — that would turn legitimate `&` into `&amp;amp;`.
+    const broken = renderMarkdown('[x](https://example.com/"onclick="alert(1))');
+    expect(broken).not.toContain('onclick="');
+    expect(broken).toContain("&quot;");
+    expect(renderMarkdown("[q](https://example.com?a=1&b=2)")).toContain(
+      "https://example.com?a=1&amp;b=2",
+    );
   });
 
   it("derives chat titles", () => {

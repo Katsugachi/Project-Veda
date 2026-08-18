@@ -79,14 +79,29 @@ impl LlamaClient {
         max_tokens: u32,
         response_format: Option<Value>,
     ) -> Result<String, LlamaClientError> {
+        self.complete_with_sink(messages, mode, max_tokens, response_format, None)
+            .await
+    }
+
+    /// Same as [`complete`], but when `on_token` is set the request is streamed
+    /// so the UI can paint tokens as they arrive instead of waiting for EOS.
+    pub async fn complete_with_sink(
+        &self,
+        messages: Vec<ChatMessage>,
+        mode: ReasoningMode,
+        max_tokens: u32,
+        response_format: Option<Value>,
+        mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+    ) -> Result<String, LlamaClientError> {
         let thinking = mode == ReasoningMode::Think;
+        let stream = on_token.is_some() && response_format.is_none();
         let mut body = json!({
             "model": self.model,
             "messages": messages,
-            "stream": false,
+            "stream": stream,
             "max_tokens": max_tokens,
-            "temperature": if thinking { 0.9 } else { 0.7 },
-            "top_p": 0.95,
+            "temperature": if thinking { 0.6 } else { 0.4 },
+            "top_p": 0.9,
             "chat_template_kwargs": { "enable_thinking": thinking }
         });
         if let Some(format) = response_format {
@@ -105,13 +120,16 @@ impl LlamaClient {
                 body: response.text().await.unwrap_or_default(),
             });
         }
-        let response: CompletionResponse = response.json().await?;
-        response
-            .choices
-            .into_iter()
-            .next()
-            .map(|choice| choice.message.content)
-            .ok_or(LlamaClientError::EmptyCompletion)
+        if !stream {
+            let response: CompletionResponse = response.json().await?;
+            return response
+                .choices
+                .into_iter()
+                .next()
+                .map(|choice| choice.message.content)
+                .ok_or(LlamaClientError::EmptyCompletion);
+        }
+        read_sse_completion(response, on_token.as_deref_mut()).await
     }
 
     pub async fn health(&self) -> Result<(), LlamaClientError> {
@@ -143,6 +161,88 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct AssistantMessage {
     content: String,
+}
+
+/// Applies one SSE `data:` line to the assembled completion. Extracted so the
+/// last-line flush and the unit tests share the exact parser — a missing
+/// function here is what made `veda-runtime` tests fail to compile, and
+/// inlining it hid the leftover-buffer path.
+fn append_sse_delta(
+    line: &str,
+    assembled: &mut String,
+    mut on_token: Option<&mut dyn FnMut(&str)>,
+) {
+    let Some(payload) = line.strip_prefix("data:") else {
+        return;
+    };
+    let payload = payload.trim();
+    if payload.is_empty() || payload == "[DONE]" {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(delta) = value
+        .pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    else {
+        return;
+    };
+    assembled.push_str(delta);
+    if let Some(sink) = on_token.as_mut() {
+        sink(delta);
+    }
+}
+
+/// Splits `pending` on newlines into SSE events. When `flush_tail` is set
+/// (end of the HTTP body) the leftover line is consumed even without a
+/// trailing newline — llama.cpp often ends the stream that way, and dropping
+/// it lost the last tokens or the whole answer when the body was one chunk.
+fn drain_sse_buffer(
+    pending: &mut String,
+    assembled: &mut String,
+    on_token: &mut Option<&mut (dyn FnMut(&str) + Send)>,
+    flush_tail: bool,
+) {
+    while let Some(split) = pending.find('\n') {
+        let line = pending[..split].trim_end_matches('\r').to_string();
+        pending.replace_range(..=split, "");
+        append_sse_delta(
+            &line,
+            assembled,
+            on_token
+                .as_deref_mut()
+                .map(|sink| sink as &mut dyn FnMut(&str)),
+        );
+    }
+    if flush_tail && !pending.trim().is_empty() {
+        let line = std::mem::take(pending);
+        append_sse_delta(
+            line.trim_end_matches('\r'),
+            assembled,
+            on_token
+                .as_deref_mut()
+                .map(|sink| sink as &mut dyn FnMut(&str)),
+        );
+    }
+}
+
+async fn read_sse_completion(
+    mut response: reqwest::Response,
+    mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> Result<String, LlamaClientError> {
+    let mut assembled = String::new();
+    let mut pending = String::new();
+    while let Some(chunk) = response.chunk().await? {
+        pending.push_str(&String::from_utf8_lossy(&chunk));
+        drain_sse_buffer(&mut pending, &mut assembled, &mut on_token, false);
+    }
+    drain_sse_buffer(&mut pending, &mut assembled, &mut on_token, true);
+    if assembled.is_empty() {
+        return Err(LlamaClientError::EmptyCompletion);
+    }
+    Ok(assembled)
 }
 
 pub fn extract_json_object(content: &str) -> Option<&str> {
@@ -208,6 +308,46 @@ mod tests {
             extract_json_object(value),
             Some("{\"queries\":[\"TaskGroup\"]}")
         );
+    }
+
+    #[test]
+    fn sse_delta_appends_content_and_ignores_done() {
+        let mut assembled = String::new();
+        let mut seen = String::new();
+        append_sse_delta(
+            r#"data: {"choices":[{"delta":{"content":"Hel"}}]}"#,
+            &mut assembled,
+            Some(&mut |piece| seen.push_str(piece)),
+        );
+        append_sse_delta(
+            "data: [DONE]",
+            &mut assembled,
+            Some(&mut |piece| seen.push_str(piece)),
+        );
+        append_sse_delta(
+            r#"data: {"choices":[{"delta":{"content":"lo"}}]}"#,
+            &mut assembled,
+            Some(&mut |piece| seen.push_str(piece)),
+        );
+        assert_eq!(assembled, "Hello");
+        assert_eq!(seen, "Hello");
+    }
+
+    #[test]
+    fn sse_flushes_the_last_line_without_a_newline() {
+        // One complete event plus a tail with no trailing `\n`. Without the
+        // end-of-body flush the second token is dropped and a single-chunk
+        // reply becomes EmptyCompletion.
+        let mut pending = String::from(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}",
+        );
+        let mut assembled = String::new();
+        let mut sink: Option<&mut (dyn FnMut(&str) + Send)> = None;
+        drain_sse_buffer(&mut pending, &mut assembled, &mut sink, false);
+        assert_eq!(assembled, "Hel");
+        drain_sse_buffer(&mut pending, &mut assembled, &mut sink, true);
+        assert_eq!(assembled, "Hello");
+        assert!(pending.is_empty());
     }
 
     #[test]

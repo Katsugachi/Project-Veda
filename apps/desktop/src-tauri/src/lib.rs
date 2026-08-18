@@ -30,6 +30,8 @@ pub fn run() {
             commands::list_downloads,
             commands::install_docset,
             commands::remove_docset,
+            commands::install_local_docs,
+            commands::pick_and_install_local_docs,
             commands::ask_veda,
             commands::read_source,
             commands::open_source,

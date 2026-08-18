@@ -81,7 +81,11 @@ fn push_chunk(
             .join(" · ")
     };
     chunks.push(DocChunk {
-        id: format!("{}:{}:{}", docset.as_str(), page.path, index),
+        // Version is part of the id so two user libraries that both have
+        // `readme.md` do not collapse into one hit when the retriever merges
+        // by chunk id. Official packs already differ by `docset`; the extra
+        // field is cheap and keeps the key unique after an upgrade.
+        id: format!("{}:{}:{}:{}", docset.as_str(), version, page.path, index),
         docset,
         version: version.into(),
         page_path: page.path.clone(),
@@ -144,6 +148,36 @@ mod tests {
         assert!(parts
             .iter()
             .all(|part| part.chars().count() <= TARGET_CHARS + 10));
+    }
+
+    #[test]
+    fn local_libraries_do_not_share_chunk_ids() {
+        // Two user folders both ship `readme.md`. The retriever merges hits
+        // by chunk.id; omitting the library slug made the second library
+        // overwrite the first at ask time.
+        let page = DocPage {
+            path: "readme.md".into(),
+            title: "Readme".into(),
+            canonical_url: "veda://docs/local/readme.md".into(),
+            symbols: Vec::new(),
+            sections: vec![DocSection {
+                heading: "Readme".into(),
+                anchor: "top".into(),
+                text: "House style for TaskGroup.".into(),
+                code: Vec::new(),
+            }],
+        };
+        let notes = chunk_page(&page, DocsetId::Local, "local-notes");
+        let api = chunk_page(&page, DocsetId::Local, "local-api");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(api.len(), 1);
+        assert_ne!(
+            notes[0].id, api[0].id,
+            "same-path local libraries must not collide: {}",
+            notes[0].id
+        );
+        assert!(notes[0].id.contains("local-notes"), "{}", notes[0].id);
+        assert!(api[0].id.contains("local-api"), "{}", api[0].id);
     }
 
     #[test]

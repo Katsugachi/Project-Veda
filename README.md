@@ -1,6 +1,6 @@
 # Veda 
 [![Unsigned desktop release](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml/badge.svg)](https://github.com/Katsugachi/Project-Veda/actions/workflows/release.yml) <br><br>
-Veda is a Rust-first, local-only desktop assistant for Python, C++, HTML, CSS, JavaScript and attached source code. It runs **MiniCPM 5** through a pinned native `llama.cpp` runtime, asks the model to plan documentation searches, fuses BM25 and semantic results, and answers with local source citations.
+Veda is a Rust-first, local-only desktop assistant for Python, C++, HTML, CSS, JavaScript and attached source code. It runs **MiniCPM 5** through a pinned native `llama.cpp` runtime, plans searches in Rust, fuses BM25 and semantic results, and answers with local source citations.
 ## Get Started
 ### Download your corresponding setup file
 Windows x64 <br>
@@ -22,7 +22,7 @@ Setup does not download resources unless all hard requirements pass:
 - SSD strongly recommended; an HDD or unknown drive produces a warning.
 - **Q5:** 6 GiB hard memory floor, 8 GiB recommended. Q5 is the default model on every device.
 - **Q8:** 12 GiB memory floor. The setup screen disables Q8 on machines below the floor so setup cannot fail later.
-- Automatic context is sized to the memory that is **actually available right now** (total RAM minus what other apps are using), with a 1.4 GB safety margin reserved for the OS and other applications. It picks the largest context whose KV cache fits in the remaining RAM, capped at MiniCPM's 131K ceiling, but never below a **16,384-token floor** regardless of how little memory is free — a sourced answer needs at least that much room, so a busy low-RAM machine degrades to 16K rather than an unusably tiny window. The explicit setting in Settings overrides it.
+- Automatic context is **16,384 tokens** on every device. Filling free RAM up to MiniCPM's 131K ceiling allocated a multi-gigabyte KV cache and made a fully offloaded 1B model take minutes per answer. 16K is enough for the retrieved sources and a sourced reply; the Settings slider still goes to 131,072 if you explicitly want a larger window.
 
 ## Pinned model assets
 
@@ -49,13 +49,12 @@ changes.
 
 A technical question follows this local pipeline:
 
-1. MiniCPM receives the search-planner system prompt and returns a bounded JSON plan with up to four queries, docset scopes and exact symbols.
-2. Rust validates that plan.
-3. Veda embeds each query locally with BGE.
-4. BM25/symbol search and cosine semantic search run over installed docs.
-5. Reciprocal-rank fusion combines both result lists, with an exact-symbol boost.
-6. MiniCPM receives only the selected source chunks, attachments and the final grounding system prompt.
-7. The answer cites `[S1]`, `[S2]`, etc. Citation chips open the corresponding local indexed excerpt.
+1. Rust builds a bounded search plan (queries, symbols, pack scope) in microseconds — the 1B model is not spent on JSON planning.
+2. Veda embeds each query locally with BGE when the embedding model is installed.
+3. An inverted BM25 index and a pre-normalised cosine index run only over the packs in scope.
+4. Reciprocal-rank fusion combines both result lists, with an exact-symbol boost.
+5. MiniCPM receives a short evidence pack (at most six excerpts), attachments and the final grounding system prompt, and streams tokens as they arrive.
+6. The answer cites `[S1]`, `[S2]`, etc. Citation chips open the corresponding local indexed excerpt.
 
 Retrieved pages and source files are explicitly marked as untrusted data in the final system prompt, so text inside a page cannot override Veda's instructions.
 

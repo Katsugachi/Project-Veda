@@ -8,7 +8,7 @@ export const mockPreflight: PreflightReport = {
   architecture: "arm64",
   operatingSystem: "macOS 15.6",
   recommendedQuant: "q5",
-  recommendedContext: 131072,
+  recommendedContext: 16384,
   hardFailures: [],
   warnings: [],
 };

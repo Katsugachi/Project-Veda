@@ -34,7 +34,7 @@ const Q8_MEMORY_FLOOR_BYTES = 12 * GIB_BYTES;
 const STATUS_PHRASES = [
   "Pondering…",
   "Thinking…",
-  "Planning the search…",
+  "Looking up symbols…",
   "Searching installed docs…",
   "Reading sources…",
   "Crystallising…",
@@ -447,7 +447,7 @@ function renderDocs(): string {
         (doc) => `<article class="doc-card" data-key="doc-${doc.id}" data-doc-filter="${escapeHtml(`${doc.name} ${doc.detail} ${doc.version}`.toLowerCase())}" style="--doc-color:${doc.accent}">
       <div class="doc-head"><div class="doc-icon">${escapeHtml(doc.initials)}</div><div class="doc-copy"><div class="doc-name">${escapeHtml(doc.name)}</div><div class="doc-version">${escapeHtml(doc.version)}</div></div></div>
       <div class="doc-description">${escapeHtml(doc.detail)}</div>
-      <div class="doc-meta"><span>${bytes(doc.compressedBytes)} download</span>${doc.pages !== undefined ? `<span>${doc.pages.toLocaleString()} installed pages</span>` : ""}</div>
+      <div class="doc-meta">${doc.id.startsWith("local-") ? "<span>Your files</span>" : `<span>${bytes(doc.compressedBytes)} download</span>`}${doc.pages !== undefined ? `<span>${doc.pages.toLocaleString()} installed pages</span>` : ""}</div>
       <div class="doc-footer">${docAction(doc)}</div>
     </article>`,
       )
@@ -455,11 +455,15 @@ function renderDocs(): string {
   }
   return `<section class="content-view" data-key="docs-view"><div class="content-inner">
     <div class="content-header">
-      <div><h1>Docs</h1><p>Install, update, or remove documentation.</p></div>
-      <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" aria-label="Filter documentation" /></label>
+      <div><h1>Docs</h1><p>Install official packs or add your own Markdown, HTML and text files.</p></div>
+      <div class="docs-header-actions">
+        <button class="button primary" id="addLocalDocs" title="Add your own documentation">${icon("plus")} Add your own docs</button>
+        <input id="localDocsInput" type="file" multiple hidden accept=".md,.markdown,.html,.htm,.txt,.rst,.text" />
+        <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" aria-label="Filter documentation" /></label>
+      </div>
     </div>
     <div class="library-summary">${indexedPages.toLocaleString()} installed pages across ${installed.length} ${installed.length === 1 ? "docset" : "docsets"}</div>
-    ${modelInstalled() ? "" : `<div class="setup-required" data-key="docs-setup-required"><div><div class="setup-required-title">Set up the local model to install documentation</div><div class="setup-required-detail">Indexing a new pack embeds its pages with the local model, so the model must be installed first. What is already installed stays browsable.</div></div><button class="button primary" id="docsSetupNow">Set up Veda</button></div>`}
+    ${modelInstalled() ? "" : `<div class="setup-required" data-key="docs-setup-required"><div><div class="setup-required-title">Keyword search works now — set up the model for semantic search</div><div class="setup-required-detail">You can add official packs and your own files without MiniCPM. Installing the local model later upgrades search from keywords to meaning.</div></div><button class="button primary" id="docsSetupNow">Set up Veda</button></div>`}
     ${body}
   </div></section>`;
 }
@@ -565,9 +569,10 @@ function renderOnboardingBody(): string {
       </div>
       ${q8Disabled ? `<p class="option-note">Q8 requires 12 GB of physical memory; ${totalGiB} is not enough, so it is disabled. Q5 is selected automatically.</p>` : ""}`;
   }
-  const total = state.docsets.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
+  const official = state.docsets.filter((doc) => !doc.id.startsWith("local-") && doc.id !== "local");
+  const total = official.filter((doc) => state.setupDocsets.has(doc.id)).reduce((sum, doc) => sum + doc.compressedBytes, 0);
   return `<div class="onboarding-kicker">Documentation</div><h1>Choose documentation</h1><p class="onboarding-lead">Download only what you need. You can change this later.</p>
-    <div class="setup-docs">${state.docsets
+    <div class="setup-docs">${official
       .map(
         (doc) =>
           `<button class="setup-doc${state.setupDocsets.has(doc.id) ? " selected" : ""}" data-setup-doc="${doc.id}"><div class="setup-doc-abbr">${escapeHtml(doc.initials)}</div><div class="setup-doc-name">${escapeHtml(doc.name)}</div></button>`,
@@ -1127,6 +1132,53 @@ async function runSetup(): Promise<void> {
   }
 }
 
+async function startAddLocalDocs(): Promise<void> {
+  if (bridge.isDesktop()) {
+    try {
+      const added = await bridge.pickAndInstallLocalDocs();
+      if (!added) return;
+      await Promise.all([loadDocsets(), loadDownloads()]);
+      render();
+      toast(`Added ${added.name}.`);
+    } catch (error) {
+      toast(`Could not add documentation: ${errorText(error)}`);
+    }
+    return;
+  }
+  document.querySelector<HTMLInputElement>("#localDocsInput")?.click();
+}
+
+async function importLocalDocFiles(list: FileList): Promise<void> {
+  const files: { path: string; content: string }[] = [];
+  for (const file of Array.from(list).slice(0, 400)) {
+    const name = file.name.toLowerCase();
+    if (!/\.(md|markdown|html|htm|txt|rst|text)$/.test(name)) continue;
+    if (file.size > 2 * 1024 * 1024) {
+      toast(`${file.name} is larger than the 2 MB per-file limit.`);
+      continue;
+    }
+    files.push({
+      path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+      content: await file.text(),
+    });
+  }
+  const picker = document.querySelector<HTMLInputElement>("#localDocsInput");
+  if (picker) picker.value = "";
+  if (!files.length) {
+    toast("Choose Markdown, HTML or text files.");
+    return;
+  }
+  const folder = files[0].path.includes("/") ? files[0].path.split("/")[0] : "Local docs";
+  try {
+    const added = await bridge.installLocalDocs(folder, files);
+    await Promise.all([loadDocsets(), loadDownloads()]);
+    render();
+    toast(`Added ${added.name} · ${added.pages ?? files.length} pages.`);
+  } catch (error) {
+    toast(`Could not add documentation: ${errorText(error)}`);
+  }
+}
+
 async function addFiles(files: FileList): Promise<void> {
   const maxBytes = 512 * 1024;
   let added = false;
@@ -1327,19 +1379,8 @@ function bindGlobalEvents(): void {
 
     const install = closest(target, ".install-doc");
     if (install) {
-      // Installing embeds every page with the local model, so without the
-      // model the download would fail only after wasting bandwidth. Route to
-      // setup instead, with a clear reason.
-      if (!modelInstalled()) {
-        toast("Set up Veda first — indexing needs the local model.");
-        state.onboardingOpen = true;
-        state.setupRunning = false;
-        state.setupError = undefined;
-        state.setupStep = 0;
-        storageRemove("veda:onboarding-skipped");
-        render();
-        return;
-      }
+      // Official packs and local files index with keyword search even when
+      // the model is missing, so Download is never blocked behind setup.
       void installDocsetBlocking(install.dataset.docset ?? "");
       return;
     }
@@ -1475,6 +1516,9 @@ function bindGlobalEvents(): void {
       case "retryDownloads":
         void loadDownloads().then(render);
         return;
+      case "addLocalDocs":
+        void startAddLocalDocs();
+        return;
       case "setupBack":
         state.setupStep = Math.max(0, state.setupStep - 1);
         render();
@@ -1562,6 +1606,7 @@ function bindGlobalEvents(): void {
     (event) => {
       const target = event.target as HTMLInputElement;
       if (target.id === "fileInput" && target.files) void addFiles(target.files);
+      if (target.id === "localDocsInput" && target.files) void importLocalDocFiles(target.files);
     },
     true,
   );
@@ -1745,6 +1790,20 @@ async function init(): Promise<void> {
   }
 
   try {
+    await bridge.onAskToken((event) => {
+      const request = pending.get(event.chatId);
+      if (!request) return;
+      applyReply(event.chatId, request.messageId, (message) => {
+        message.content += event.text;
+        message.status = undefined;
+      });
+      scheduleRender();
+    });
+  } catch (error) {
+    console.error("Veda could not subscribe to answer tokens:", error);
+  }
+
+  try {
     await bridge.onDownloadProgress((item) => {
       const existing = state.downloads.findIndex((download) => download.id === item.id);
       if (existing >= 0) state.downloads[existing] = item;
@@ -1785,4 +1844,5 @@ export const __test = {
   advanceStatuses,
   popoverFlipsUp,
   popoverPlacement,
+  importLocalDocFiles,
 };

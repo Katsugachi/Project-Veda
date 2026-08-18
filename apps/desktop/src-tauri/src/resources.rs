@@ -317,18 +317,27 @@ async fn index_docset(
     state: &AppState,
     pack: &veda_docs::DocPack,
 ) -> Result<(), String> {
-    let active: ActiveRuntime = serde_json::from_slice(
-        &tokio::fs::read(state.data_dir.join("runtime").join("active.json"))
-            .await
-            .map_err(|_| {
-                "MiniCPM resources must be prepared before documentation indexing".to_string()
-            })?,
-    )
-    .map_err(|error| contextual_error("The active runtime record is unreadable", &error))?;
+    let chunks = pack
+        .pages
+        .iter()
+        .flat_map(|page| veda_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
+        .collect::<Vec<_>>();
+    // Semantic embeddings are optional. A missing model must never block
+    // adding documentation — BM25 still works with empty vectors, and that
+    // is exactly how a user "adds more docs" before first-run setup.
     let embedding_model = state
         .data_dir
         .join("models")
         .join("bge-small-en-v1.5-q8_0.gguf");
+    let active = tokio::fs::read(state.data_dir.join("runtime").join("active.json"))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ActiveRuntime>(&bytes).ok());
+    let can_embed = embedding_model.exists() && active.is_some();
+    if !can_embed {
+        return write_lexical_index(app, state, pack, &chunks).await;
+    }
+    let active = active.expect("checked above");
     let logical_cpus = sysinfo::System::new_all().cpus().len();
     let threads = logical_cpus.div_ceil(2).clamp(1, 8);
     let mut sidecar = LlamaSidecar::spawn(SidecarConfig {
@@ -344,12 +353,7 @@ async fn index_docset(
     .map_err(|error| contextual_error("Could not start search preparation", &error))?;
     let client = veda_runtime::EmbeddingClient::new(&sidecar.base_url, &sidecar.api_key)
         .map_err(|error| contextual_error("Could not start search preparation", &error))?;
-    let chunks = pack
-        .pages
-        .iter()
-        .flat_map(|page| veda_docs::chunk_page(page, pack.manifest.id, &pack.manifest.version))
-        .collect::<Vec<_>>();
-    let id = pack.manifest.id.as_str().to_string();
+    let id = index_stem(&pack.manifest);
     let item_name = pack.manifest.name.clone();
     let total = chunks.len().max(1);
     let mut indexed = Vec::with_capacity(chunks.len());
@@ -387,12 +391,7 @@ async fn index_docset(
                 version: chunk.version.clone(),
                 title: chunk.title.clone(),
                 section: chunk.section.clone(),
-                url: format!(
-                    "veda://docs/{}/{}#{}",
-                    chunk.docset.as_str(),
-                    chunk.page_path,
-                    chunk.anchor
-                ),
+                url: format!("veda://docs/{}/{}#{}", id, chunk.page_path, chunk.anchor),
                 text: chunk.text.clone(),
                 symbols: chunk.symbols.clone(),
                 embedding,
@@ -482,6 +481,83 @@ async fn embed_one_with_backoff(
     }
 }
 
+/// On-disk index filename stem. Official packs use the catalog id (`python`).
+/// User libraries use the folder slug (`local-notes`), never the shared
+/// `DocsetId::Local` string `"local"` — that collision is what made a second
+/// local library overwrite the first, and made list_local_docsets miss both.
+pub(crate) fn index_stem(manifest: &veda_docs::DocPackManifest) -> String {
+    if manifest.version.starts_with("local-") {
+        manifest.version.clone()
+    } else {
+        manifest.id.as_str().to_string()
+    }
+}
+
+async fn write_lexical_index(
+    app: &AppHandle,
+    state: &AppState,
+    pack: &veda_docs::DocPack,
+    chunks: &[veda_docs::DocChunk],
+) -> Result<(), String> {
+    let item_id = index_stem(&pack.manifest);
+    let total = chunks.len().max(1);
+    let indexed = chunks
+        .iter()
+        .map(|chunk| veda_search::SearchChunk {
+            id: chunk.id.clone(),
+            docset: chunk.docset,
+            version: chunk.version.clone(),
+            title: chunk.title.clone(),
+            section: chunk.section.clone(),
+            url: format!(
+                "veda://docs/{}/{}#{}",
+                item_id, chunk.page_path, chunk.anchor
+            ),
+            text: chunk.text.clone(),
+            symbols: chunk.symbols.clone(),
+            embedding: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    persist_index(state, &item_id, indexed).await?;
+    let installed = DownloadItem {
+        id: format!("{item_id}-index"),
+        name: pack.manifest.name.clone(),
+        detail: format!("{} pages ready (keyword search)", total),
+        state: "installed".into(),
+        progress: 100.0,
+        downloaded_bytes: total as u64,
+        total_bytes: total as u64,
+        speed_bytes: None,
+        docset: Some(item_id),
+    };
+    upsert_download(state, installed.clone());
+    let _ = app.emit("download-progress", installed);
+    Ok(())
+}
+
+async fn persist_index(
+    state: &AppState,
+    id: &str,
+    indexed: Vec<veda_search::SearchChunk>,
+) -> Result<(), String> {
+    let index_dir = state.data_dir.join("indexes");
+    tokio::fs::create_dir_all(&index_dir)
+        .await
+        .map_err(|error| contextual_error("Could not prepare the search index folder", &error))?;
+    let destination = index_dir.join(format!("{id}.json.zst"));
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let file = File::create(&destination)
+            .map_err(|error| contextual_error("Could not write the search index", &error))?;
+        let encoder = zstd::Encoder::new(file, 8)
+            .map_err(|error| contextual_error("Could not write the search index", &error))?;
+        serde_json::to_writer(encoder.auto_finish(), &indexed)
+            .map_err(|error| contextual_error("Could not write the search index", &error))
+    })
+    .await
+    .map_err(|error| contextual_error("The search import stopped unexpectedly", &error))??;
+    Ok(())
+}
+
 fn docset_name(id: veda_core::DocsetId) -> &'static str {
     match id {
         veda_core::DocsetId::Python => "Python",
@@ -489,6 +565,7 @@ fn docset_name(id: veda_core::DocsetId) -> &'static str {
         veda_core::DocsetId::Html => "HTML",
         veda_core::DocsetId::Css => "CSS",
         veda_core::DocsetId::Javascript => "JavaScript",
+        veda_core::DocsetId::Local => "Local docs",
     }
 }
 pub(crate) fn expected_docset_version(id: &str) -> Option<&'static str> {
@@ -537,7 +614,162 @@ fn docset_metadata(
             "https://creativecommons.org/licenses/by-sa/2.5/",
             "MDN content by Mozilla Contributors",
         ),
+        veda_core::DocsetId::Local => ("local", "veda://local", "", "Imported by the user"),
     }
+}
+
+pub fn slugify_library(name: &str) -> String {
+    let slug = name
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() {
+        "docs".into()
+    } else {
+        slug
+    }
+}
+
+/// Imports a user-chosen folder or an in-memory file list as a new local
+/// documentation library. Works without MiniCPM: the index is lexical-only
+/// until the embedding model is installed.
+pub async fn install_local_docs(
+    app: AppHandle,
+    state: &AppState,
+    name: String,
+    files: Option<Vec<(String, String)>>,
+    folder: Option<PathBuf>,
+) -> Result<crate::commands::Docset, String> {
+    let slug = slugify_library(&name);
+    let mut library_id = format!("local-{slug}");
+    let mut suffix = 2_u32;
+    while state
+        .data_dir
+        .join("docsets")
+        .join(&library_id)
+        .join("manifest.json")
+        .exists()
+    {
+        library_id = format!("local-{slug}-{suffix}");
+        suffix += 1;
+    }
+    let canonical = format!("veda://docs/{library_id}");
+    let pages = if let Some(files) = files {
+        veda_docs::ingest_memory(&files, &canonical)
+            .map_err(|error| contextual_error("Could not read the documentation files", &error))?
+    } else if let Some(folder) = folder {
+        let folder_for_worker = folder.clone();
+        let canonical_for_worker = canonical.clone();
+        tokio::task::spawn_blocking(move || {
+            veda_docs::ingest_directory(&folder_for_worker, &canonical_for_worker)
+        })
+        .await
+        .map_err(|error| contextual_error("The import stopped unexpectedly", &error))?
+        .map_err(|error| contextual_error("Could not read the documentation folder", &error))?
+    } else {
+        return Err("Choose a folder or some documentation files first.".into());
+    };
+    if pages.is_empty() {
+        return Err("No Markdown, HTML or text files were found in that selection.".into());
+    }
+    let page_count = pages.len();
+    let install_dir = state.data_dir.join("docsets").join(&library_id);
+    tokio::fs::create_dir_all(&install_dir)
+        .await
+        .map_err(|error| contextual_error("Could not prepare the documentation folder", &error))?;
+    let manifest = veda_docs::DocPackManifest {
+        schema_version: 1,
+        id: veda_core::DocsetId::Local,
+        name: name.clone(),
+        version: library_id.clone(),
+        source_url: canonical.clone(),
+        source_revision: library_id.clone(),
+        created_at: "2026-08-18T00:00:00Z".into(),
+        locale: "en".into(),
+        page_count,
+        license: veda_docs::LicenseInfo {
+            name: "User imported".into(),
+            url: String::new(),
+            attribution: "Imported by the user".into(),
+            source_offer_url: None,
+        },
+    };
+    let pack = veda_docs::DocPack {
+        manifest: manifest.clone(),
+        pages,
+    };
+    let pack_path = install_dir.join("content.vedadoc");
+    let pack_for_worker = pack.clone();
+    tokio::task::spawn_blocking(move || pack_for_worker.write(&pack_path))
+        .await
+        .map_err(|error| contextual_error("The documentation import stopped unexpectedly", &error))?
+        .map_err(|error| contextual_error("Could not write the documentation pack", &error))?;
+    index_docset(&app, state, &pack).await?;
+    let manifest_json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| contextual_error("Could not save the documentation manifest", &error))?;
+    tokio::fs::write(install_dir.join("manifest.json"), manifest_json)
+        .await
+        .map_err(|error| contextual_error("Could not save the documentation manifest", &error))?;
+    *state.search_index.write() = None;
+    Ok(crate::commands::Docset {
+        id: library_id,
+        name,
+        detail: "Your documentation, searchable offline.".into(),
+        version: "local".into(),
+        compressed_bytes: 0,
+        installed_bytes: 0,
+        state: "installed".into(),
+        progress: 100.0,
+        pages: Some(page_count),
+        accent: "#c4a574".into(),
+        initials: "YO".into(),
+    })
+}
+
+pub async fn remove_local_docset(state: &AppState, id: &str) -> Result<(), String> {
+    if !id.starts_with("local-") && id != "local" {
+        return Err(format!("not a local documentation library: {id}"));
+    }
+    let install_dir = state.data_dir.join("docsets").join(id);
+    let index_path = state
+        .data_dir
+        .join("indexes")
+        .join(format!("{id}.json.zst"));
+    if let Err(error) = tokio::fs::remove_dir_all(&install_dir).await {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(contextual_error(
+                "Could not remove the documentation pack",
+                &error,
+            ));
+        }
+    }
+    if let Err(error) = tokio::fs::remove_file(index_path).await {
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(contextual_error(
+                "Could not remove the search index",
+                &error,
+            ));
+        }
+    }
+    let index_id = format!("{id}-index");
+    state
+        .downloads
+        .write()
+        .retain(|item| item.id != id && item.id != index_id);
+    *state.search_index.write() = None;
+    Ok(())
 }
 
 fn enforce_resources(quant: ModelQuant, data_dir: &Path) -> Result<(), String> {
@@ -905,6 +1137,61 @@ mod tests {
         // macOS has no CPU runtime in the catalog; Metal failing is a hard
         // error rather than a silent CPU downgrade.
         assert_eq!(next_backend("metal"), None);
+    }
+
+    #[test]
+    fn library_slugs_are_stable_and_safe() {
+        assert_eq!(super::slugify_library("My Notes!"), "my-notes");
+        assert_eq!(super::slugify_library("///"), "docs");
+        assert_eq!(super::slugify_library("C++ API"), "c-api");
+    }
+
+    #[test]
+    fn local_index_stem_uses_the_folder_slug_not_the_shared_enum() {
+        // list_local_docsets looks for `local-<slug>.json.zst`. Writing
+        // `local.json.zst` (DocsetId::Local.as_str()) made the second library
+        // overwrite the first and made both vanish from the Docs tab.
+        let local = veda_docs::DocPackManifest {
+            schema_version: 1,
+            id: veda_core::DocsetId::Local,
+            name: "Notes".into(),
+            version: "local-notes".into(),
+            source_url: "veda://docs/local-notes".into(),
+            source_revision: "local-notes".into(),
+            created_at: "2026-08-18T00:00:00Z".into(),
+            locale: "en".into(),
+            page_count: 1,
+            license: veda_docs::LicenseInfo {
+                name: "User imported".into(),
+                url: String::new(),
+                attribution: "Imported by the user".into(),
+                source_offer_url: None,
+            },
+        };
+        assert_eq!(super::index_stem(&local), "local-notes");
+        assert_ne!(
+            super::index_stem(&local),
+            veda_core::DocsetId::Local.as_str()
+        );
+
+        let python = veda_docs::DocPackManifest {
+            schema_version: 1,
+            id: veda_core::DocsetId::Python,
+            name: "Python".into(),
+            version: "3.14.7".into(),
+            source_url: "https://docs.python.org/3".into(),
+            source_revision: "python-source-3.14.7".into(),
+            created_at: "2026-08-12T00:00:00Z".into(),
+            locale: "en".into(),
+            page_count: 1,
+            license: veda_docs::LicenseInfo {
+                name: "PSF".into(),
+                url: String::new(),
+                attribution: String::new(),
+                source_offer_url: None,
+            },
+        };
+        assert_eq!(super::index_stem(&python), "python");
     }
 
     #[test]
