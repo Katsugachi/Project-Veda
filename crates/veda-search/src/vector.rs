@@ -23,9 +23,8 @@ impl VectorIndex {
         // the official packs the user already had.
         let dimensions = vectors
             .iter()
+            .find(|vector| !vector.is_empty())
             .map(Vec::len)
-            .filter(|len| *len > 0)
-            .next()
             .unwrap_or(0);
         if dimensions == 0 {
             return Ok(Self {

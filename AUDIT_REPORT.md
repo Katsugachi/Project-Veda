@@ -132,12 +132,10 @@ not build.
 
 ## Files touched in this audit pass
 
-Critical path:
+This fix-forward pass:
 
-- `crates/veda-core/src/{context,planner,types,preflight,lib}.rs`
-- `crates/veda-runtime/src/{client,orchestrator,sidecar}.rs`
-- `crates/veda-search/src/{vector,hybrid,lexical}.rs`
-- `crates/veda-docs/src/{ingest,chunk,lib}.rs`
-- `apps/desktop/src-tauri/src/{commands,resources,lib,session}.rs`
-- `ui/src/{main,bridge,types,markdown}.ts`
-- `ui/tests/{round10,no-regressions}.test.ts`
+- `crates/veda-runtime/src/client.rs`
+- `crates/veda-runtime/src/orchestrator.rs`
+- `crates/veda-search/src/vector.rs`
+- `.github/workflows/ci.yml`
+- `AUDIT_REPORT.md`
