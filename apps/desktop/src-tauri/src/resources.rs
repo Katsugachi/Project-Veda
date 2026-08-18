@@ -391,7 +391,7 @@ async fn index_docset(
                 version: chunk.version.clone(),
                 title: chunk.title.clone(),
                 section: chunk.section.clone(),
-                url: format!("veda://docs/{}/{}#{}", id, chunk.page_path, chunk.anchor),
+                url: format!("veda://docs/{id}/{}#{}", chunk.page_path, chunk.anchor),
                 text: chunk.text.clone(),
                 symbols: chunk.symbols.clone(),
                 embedding,
@@ -510,8 +510,8 @@ async fn write_lexical_index(
             title: chunk.title.clone(),
             section: chunk.section.clone(),
             url: format!(
-                "veda://docs/{}/{}#{}",
-                item_id, chunk.page_path, chunk.anchor
+                "veda://docs/{item_id}/{}#{}",
+                chunk.page_path, chunk.anchor
             ),
             text: chunk.text.clone(),
             symbols: chunk.symbols.clone(),
@@ -522,7 +522,7 @@ async fn write_lexical_index(
     let installed = DownloadItem {
         id: format!("{item_id}-index"),
         name: pack.manifest.name.clone(),
-        detail: format!("{} pages ready (keyword search)", total),
+        detail: format!("{total} pages ready (keyword search)"),
         state: "installed".into(),
         progress: 100.0,
         downloaded_bytes: total as u64,
