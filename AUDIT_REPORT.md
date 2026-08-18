@@ -1,7 +1,7 @@
 # Veda audit report
 
 Date: 2026-08-18  
-Branch: `arena/01a013a5-project-veda`  
+Branch: `arena/01a01510-project-veda` (fix-forward from `main` @ `e6fd22e`)  
 Scope: full app (UI, desktop commands, runtime, search, docs, core).
 
 This is a review of how the pieces actually join, not a test-count claim.
@@ -56,6 +56,7 @@ reproducer that fails if the fix is reverted.
 | 11 | Markdown quote-in-URL | First `escapeHtml` of the whole block already turns `"` into `&quot;` before the `<a>` rewrite. A second `escapeHtml(url)` would turn real `&` into `&amp;amp;` | Left the first-pass escape; added a regression that `&` stays `&amp;` once | `only links safe schemes` |
 | 12 | Last streamed tokens vanished / runtime tests did not compile | `read_sse_completion` dropped the leftover buffer when the body had no trailing newline; the unit test called `append_sse_delta` which did not exist | Extracted `append_sse_delta` + `drain_sse_buffer(..., flush_tail)` | `sse_flushes_the_last_line_without_a_newline` **fails** if `flush_tail` is ignored; `sse_delta_appends_content_and_ignores_done` **fails to compile** if the helper is deleted |
 | 13 | Two local libraries with `readme.md` hid each other | `chunk_page` built `id = local:{path}:{n}`; `LocalRetriever` merges by that id | Id is `local:{library-slug}:{path}:{n}` | `local_libraries_do_not_share_chunk_ids` **fails** on the old format; `two_local_libraries_with_the_same_filename_both_retrieve` |
+| 14 | `cargo test --workspace` red on main; `veda-runtime` never compiled on CI | `on_token` is already `Option<&mut (dyn FnMut(&str) + Send)>`. `.as_deref_mut()` reborrows that local; the reborrow is stored in the future and held across `.await` → **E0597**. Same bug twice: `client.rs` (`read_sse_completion(..., on_token.as_deref_mut()).await`) and `orchestrator.rs` (`complete_with_sink(..., on_token.as_deref_mut())` then `.await`). Clippy never ran. | Pass `on_token` by value. Drop the now-needless `mut` on both params. | rustc 1.88.0 snippet with the same types: broken file is **E0597**; passing `on_token` compiles. Workspace compile is CI — crates.io TLS is blocked here. |
 
 ---
 
@@ -75,38 +76,46 @@ so they are not “forgotten bugs”.
 
 ---
 
-## Verification (executed this pass)
+## Verification (this pass — 2026-08-18, after PR #8 merged red)
+
+What CI actually said on `main` (`e6fd22e`, run
+[32131603062](https://github.com/Katsugachi/Project-Veda/actions/runs/32131603062)):
 
 ```
-./node_modules/.bin/tsc --noEmit     clean
-./node_modules/.bin/vitest run       128 passed / 5 files
-                                       (file-input change, local remove,
-                                        setup filter, href escape, 16K auto)
-./node_modules/.bin/vite build       clean (index-xNIXLQzt.js 61.41 kB)
-cargo test -p veda-core              28 passed (16K auto, planner keeps Local)
-cargo test -p veda-search            15 passed (mixed vectors, two local
-                                       README.md hits, 8k BM25 in 0.26s)
-cargo test -p veda-docs              3 passed (local chunk ids stay unique)
-rustfmt --check                      clean on touched Rust
+npm ci / npm run build / cargo fmt --all -- --check   passed
+cargo test --workspace                                failed, exit 101
+cargo clippy --workspace --all-targets -- -D warnings skipped
 ```
 
-Offline `cargo test` ran against a crates.io-blocked sandbox using the
-current sources copied into `/tmp/veda-offline` (serde/thiserror derives
-stripped only in that copy). The assertions that pin the bugs ran on the
-real algorithms.
+The compile error is two identical E0597s in `veda-runtime`. After that
+failure the workspace, including the desktop crate, is not compiled.
 
-Quality, not count:
+What this sandbox actually ran:
 
-- The file-input test **fails** if the `change` listener is deleted.
-- The planner Local test **failed on the unfixed source**, then passed.
-- Mixed-vector tests **fail** if `VectorIndex::build` is reverted to “all same length”.
-- `index_stem` **fails** if local packs write `local.json.zst` again.
-- SSE last-line test **fails** if `flush_tail` is a no-op.
-- Local chunk-id test **fails** if `push_chunk` drops the library slug.
+```
+rustc 1.88.0 (installed from npm @rustbin, not rustup — static.rust-lang.org TLS is blocked)
 
-Desktop `veda-desktop` is not compiled here (no crates.io). CI
-`cargo test --workspace` / `clippy -D warnings` is the compile gate for
-Tauri, dialog `FilePath`, and the `Option<EmbeddingClient>` match.
+# same types as client.rs / orchestrator.rs
+rustc --edition 2021 broken.rs   → error[E0597]: `on_token` does not live long enough
+                                   (as_deref_mut() held across .await)
+rustc --edition 2021 fixed.rs    → exit 0 (pass on_token by value)
+rustfmt --check                  → clean on the two touched files
+
+cargo test --workspace           NOT RUN
+cargo clippy --workspace         NOT RUN
+crates.io / static.rust-lang.org curl: (35) OpenSSL SSL_connect
+```
+
+`veda-runtime` and `veda-desktop` have **not** been compiled in this
+sandbox. Calling them verified would be a lie. The compile gate is CI
+on this branch. Do not merge until
+`cargo test --workspace` and
+`cargo clippy --workspace --all-targets -- -D warnings` are green.
+
+The product items in the table above (16K auto context, Rust planner,
+Docs tab, BM25, local index stems, chunk ids) landed in PR #8. Their
+logic is unchanged by this pass. Item 14 is the only reason `main` does
+not build.
 
 ---
 

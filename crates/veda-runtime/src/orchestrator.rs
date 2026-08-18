@@ -45,7 +45,7 @@ impl<R: Retriever> VedaEngine<R> {
     pub async fn ask_with_sink(
         &self,
         request: AskRequest,
-        mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+        on_token: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<AskResponse, RuntimeError> {
         let started = Instant::now();
         // Planning used to be a full MiniCPM generation (JSON mode, up to 420
@@ -79,7 +79,9 @@ impl<R: Retriever> VedaEngine<R> {
                     512
                 },
                 None,
-                on_token.as_deref_mut(),
+                // Same lifetime rule as LlamaClient::complete_with_sink:
+                // do not as_deref_mut() this Option across the .await below.
+                on_token,
             )
             .await?;
         let lexical_hits = chunks

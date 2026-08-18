@@ -91,7 +91,7 @@ impl LlamaClient {
         mode: ReasoningMode,
         max_tokens: u32,
         response_format: Option<Value>,
-        mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+        on_token: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<String, LlamaClientError> {
         let thinking = mode == ReasoningMode::Think;
         let stream = on_token.is_some() && response_format.is_none();
@@ -129,7 +129,9 @@ impl LlamaClient {
                 .map(|choice| choice.message.content)
                 .ok_or(LlamaClientError::EmptyCompletion);
         }
-        read_sse_completion(response, on_token.as_deref_mut()).await
+        // Pass the Option<&mut dyn …> through. as_deref_mut() reborrows the
+        // local and that reborrow is held across .await (E0597).
+        read_sse_completion(response, on_token).await
     }
 
     pub async fn health(&self) -> Result<(), LlamaClientError> {
