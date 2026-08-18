@@ -31,23 +31,61 @@ pub async fn prepare(app: AppHandle, state: &AppState, quant: ModelQuant) -> Res
     let chat_path = download_asset(&app, state, &chat, state.data_dir.join("models")).await?;
     download_asset(&app, state, &embedding, state.data_dir.join("models")).await?;
 
-    let preferred = preferred_backend().await;
-    let runtime = select_runtime(&catalog.assets, preferred)?.clone();
-    match install_and_probe_runtime(&app, state, &catalog.assets, &runtime, &chat_path).await {
-        Ok(active) => write_active_runtime(state, active).await,
-        Err(accelerated_error) if preferred != "cpu" => {
-            tracing::warn!(%accelerated_error, backend = preferred, "accelerated runtime failed health probe; falling back to CPU");
-            let cpu = select_runtime(&catalog.assets, "cpu")?.clone();
-            let active = install_and_probe_runtime(&app, state, &catalog.assets, &cpu, &chat_path)
-                .await
-                .map_err(|cpu_error| {
-                    format!(
-                        "{preferred} failed: {accelerated_error}; CPU fallback failed: {cpu_error}"
-                    )
-                })?;
-            write_active_runtime(state, active).await
+    // Pick the best backend for this device and fall back through the chain
+    // only when a real model-loading probe fails. Every failed runtime is
+    // retired immediately, so exactly one backend is ever left installed —
+    // the device never accumulates both CPU and GPU builds.
+    let mut backend = preferred_backend().await;
+    loop {
+        let runtime = select_runtime(&catalog.assets, backend)?.clone();
+        match install_and_probe_runtime(&app, state, &catalog.assets, &runtime, &chat_path).await {
+            Ok(active) => {
+                write_active_runtime(state, active).await?;
+                return Ok(());
+            }
+            Err(error) => match next_backend(backend) {
+                Some(next) => {
+                    tracing::warn!(%error, backend, next, "runtime failed health probe; trying the next backend");
+                    retire_runtime(state, &catalog.assets, &runtime).await;
+                    backend = next;
+                }
+                None => return Err(error),
+            },
         }
-        Err(error) => Err(error),
+    }
+}
+
+/// The fallback chain after a runtime fails its health probe. `preferred_backend`
+/// already chose the best fit for the platform, so this only steps down from a
+/// failed accelerator to a more compatible one, ending at CPU.
+fn next_backend(current: &str) -> Option<&'static str> {
+    match current {
+        "cuda" => Some("vulkan"),
+        "vulkan" | "opencl-adreno" => Some("cpu"),
+        _ => None,
+    }
+}
+
+/// Removes a runtime that failed its health probe — plus any platform/backend
+/// library dependency it pulled in (e.g. CUDA's `cudart`) — and their download
+/// records, so exactly one backend remains installed after a fallback and the
+/// Downloads tab never shows a phantom library row.
+async fn retire_runtime(state: &AppState, assets: &[Asset], runtime: &Asset) {
+    let mut ids = vec![runtime.id.clone()];
+    ids.extend(
+        assets
+            .iter()
+            .filter(|asset| {
+                asset.kind == AssetKind::RuntimeDependency
+                    && asset.platform == runtime.platform
+                    && asset.backend == runtime.backend
+            })
+            .map(|asset| asset.id.clone()),
+    );
+    for id in ids {
+        let dir = state.data_dir.join("runtime").join(&id);
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+        state.downloads.write().retain(|item| item.id != id);
     }
 }
 
@@ -371,6 +409,7 @@ async fn index_docset(
                 downloaded_bytes: completed as u64,
                 total_bytes: total as u64,
                 speed_bytes: None,
+                docset: Some(id.clone()),
             };
             upsert_download(state, item.clone());
             let _ = app.emit("download-progress", item);
@@ -405,6 +444,7 @@ async fn index_docset(
         downloaded_bytes: total as u64,
         total_bytes: total as u64,
         speed_bytes: None,
+        docset: Some(id.clone()),
     };
     upsert_download(state, installed.clone());
     let _ = app.emit("download-progress", installed);
@@ -613,6 +653,7 @@ async fn download_asset(
     {
         return Ok(destination);
     }
+    let docset_id = asset.docset.map(|docset| docset.as_str().to_string());
     let item = DownloadItem {
         id: asset.id.clone(),
         name: asset.name.clone(),
@@ -622,6 +663,7 @@ async fn download_asset(
         downloaded_bytes: 0,
         total_bytes: asset.bytes,
         speed_bytes: None,
+        docset: docset_id.clone(),
     };
     upsert_download(state, item.clone());
     let _ = app.emit("download-progress", &item);
@@ -637,6 +679,7 @@ async fn download_asset(
     let progress_app = app.clone();
     let progress_state = state.downloads.clone();
     let name = asset.name.clone();
+    let progress_docset = docset_id.clone();
     let progress_task = tokio::spawn(async move {
         while receiver.changed().await.is_ok() {
             let progress = receiver.borrow_and_update().clone();
@@ -658,6 +701,7 @@ async fn download_asset(
                 downloaded_bytes: progress.downloaded_bytes,
                 total_bytes: progress.total_bytes,
                 speed_bytes: Some(progress.bytes_per_second),
+                docset: progress_docset.clone(),
             };
             let mut items = progress_state.write();
             if let Some(existing) = items.iter_mut().find(|existing| existing.id == item.id) {
@@ -695,6 +739,7 @@ async fn download_asset(
             downloaded_bytes: partial_bytes,
             total_bytes: asset.bytes,
             speed_bytes: None,
+            docset: docset_id.clone(),
         };
         upsert_download(state, failed);
         return Err(contextual_error(
@@ -711,6 +756,7 @@ async fn download_asset(
         downloaded_bytes: asset.bytes,
         total_bytes: asset.bytes,
         speed_bytes: None,
+        docset: docset_id,
     };
     upsert_download(state, installed.clone());
     let _ = app.emit("download-progress", installed);
@@ -848,7 +894,18 @@ fn walk_files(root: &Path) -> io::Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_embedding_retry_limit, MIN_EMBEDDING_RETRY_BYTES};
+    use super::{next_backend, next_embedding_retry_limit, MIN_EMBEDDING_RETRY_BYTES};
+
+    #[test]
+    fn backend_fallback_chain_steps_down_to_cpu() {
+        assert_eq!(next_backend("cuda"), Some("vulkan"));
+        assert_eq!(next_backend("vulkan"), Some("cpu"));
+        assert_eq!(next_backend("opencl-adreno"), Some("cpu"));
+        assert_eq!(next_backend("cpu"), None);
+        // macOS has no CPU runtime in the catalog; Metal failing is a hard
+        // error rather than a silent CPU downgrade.
+        assert_eq!(next_backend("metal"), None);
+    }
 
     #[test]
     fn embedding_retry_limit_strictly_shrinks_and_terminates() {

@@ -143,6 +143,10 @@
   animation: veda-menu-in 130ms var(--ease) both;
 }
 
+.recent-menu.flip-up {
+  animation: veda-menu-in-up 130ms var(--ease) both;
+}
+
 .onboarding-body.entering > * {
   animation: veda-content-in 200ms var(--ease) both;
 }
@@ -168,6 +172,16 @@
 
 @keyframes veda-menu-in {
   from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Menus that open upward slide in from below their trigger. */
+.popover.flip-up {
+  animation: veda-menu-in-up 150ms var(--ease) both;
+}
+
+@keyframes veda-menu-in-up {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 

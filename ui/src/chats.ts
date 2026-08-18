@@ -70,7 +70,11 @@ export function loadChats(): Chat[] {
         updatedAt: typeof chat.updatedAt === "number" ? chat.updatedAt : Date.now(),
         // A reply that was still streaming when the app closed is not resumable,
         // so the flag is cleared on load instead of leaving a stuck caret.
-        messages: chat.messages.filter(isMessage).map((message) => ({ ...message, streaming: false })),
+        messages: chat.messages.filter(isMessage).map((message) => ({
+          ...message,
+          streaming: false,
+          status: undefined,
+        })),
       }))
       .slice(0, MAX_CHATS);
   } catch {
@@ -84,7 +88,7 @@ export function saveChats(chats: Chat[]): void {
     .slice(0, MAX_CHATS)
     .map((chat) => ({
       ...chat,
-      messages: chat.messages.map(({ streaming: _streaming, ...message }) => message),
+      messages: chat.messages.map(({ streaming: _streaming, status: _status, ...message }) => message),
     }));
   storageSet(STORAGE_KEY, JSON.stringify(persistable));
 }

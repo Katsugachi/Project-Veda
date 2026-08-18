@@ -28,6 +28,24 @@ const GIB_BYTES = 1024 ** 3;
 // disabled up front instead of failing later with "Something went wrong".
 const Q8_MEMORY_FLOOR_BYTES = 12 * GIB_BYTES;
 
+// The activity line shown while a reply streams. It rotates through these so a
+// slow local request never looks frozen; each phrase reads like a concrete
+// stage of the local pipeline rather than a single static "Searching…".
+const STATUS_PHRASES = [
+  "Pondering…",
+  "Thinking…",
+  "Planning the search…",
+  "Searching installed docs…",
+  "Reading sources…",
+  "Crystallising…",
+  "Substituting…",
+  "Composing the answer…",
+  "Verifying citations…",
+] as const;
+
+/** The first activity phrase shown when a request begins. */
+const firstStatus = (): string => STATUS_PHRASES[0];
+
 type AppState = {
   view: View;
   theme: Theme;
@@ -169,6 +187,11 @@ const isBusy = (chatId = state.activeChatId): boolean => pending.has(chatId);
 
 function isDocInstalled(doc: Docset): boolean {
   return doc.state === "installed" || doc.state === "updateAvailable";
+}
+
+/** The chat model files are on disk — a prerequisite for indexing docs. */
+function modelInstalled(): boolean {
+  return state.downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
 }
 
 // Q8 needs a 12 GiB machine (the same floor the backend enforces before it
@@ -376,7 +399,7 @@ function renderMessage(message: ChatMessage): string {
     <div class="message-main">
       <div class="message-head">${message.role === "assistant" ? "Veda" : "You"}<span class="message-time">${timeLabel(message.createdAt)}</span></div>
       ${attachments}
-      <div class="message-body">${renderMarkdown(message.content)}${message.streaming ? '<span class="stream-caret"></span>' : ""}</div>
+      <div class="message-body">${message.streaming && !message.content ? `<div class="assistant-status" data-key="status-${message.id}"><span class="status-spinner" aria-hidden="true"></span><span class="status-text">${escapeHtml(message.status ?? firstStatus())}</span></div>` : renderMarkdown(message.content)}${message.streaming && message.content ? '<span class="stream-caret"></span>' : ""}</div>
       ${note}
       ${sourceMarkup}
     </div>
@@ -436,6 +459,7 @@ function renderDocs(): string {
       <label class="search-box">${icon("search")}<input id="docSearch" placeholder="Filter documentation" aria-label="Filter documentation" /></label>
     </div>
     <div class="library-summary">${indexedPages.toLocaleString()} installed pages across ${installed.length} ${installed.length === 1 ? "docset" : "docsets"}</div>
+    ${modelInstalled() ? "" : `<div class="setup-required" data-key="docs-setup-required"><div><div class="setup-required-title">Set up the local model to install documentation</div><div class="setup-required-detail">Indexing a new pack embeds its pages with the local model, so the model must be installed first. What is already installed stays browsable.</div></div><button class="button primary" id="docsSetupNow">Set up Veda</button></div>`}
     ${body}
   </div></section>`;
 }
@@ -475,12 +499,12 @@ function renderSettings(): string {
   const entering = enterClass("settings", state.settingsOpen);
   if (!state.settingsOpen) return "";
   const recommended = state.preflight?.recommendedContext;
-  const modelInstalled = state.downloads.some((item) => item.id.startsWith("minicpm5-") && item.state === "installed");
+  const modelReady = modelInstalled();
   return `<div class="modal-backdrop${entering}" id="settingsBackdrop" data-key="settings"><section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <header class="settings-header"><h2 id="settingsTitle">Settings</h2><button class="icon-button" id="closeSettings" aria-label="Close settings">${icon("x")}</button></header>
     <div class="settings-body">
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Appearance</div><div class="setting-detail">${state.theme === "dark" ? "Dark" : "Light"}</div></div><button class="button" id="settingsTheme">Change</button></div>
-      ${modelInstalled ? "" : `<div class="setting-row"><div class="setting-copy"><div class="setting-name">Setup</div><div class="setting-detail">Model files are not installed yet.</div></div><button class="button primary" id="settingsSetup">Set up Veda</button></div>`}
+      ${modelReady ? "" : `<div class="setting-row"><div class="setting-copy"><div class="setting-name">Setup</div><div class="setting-detail">Model files are not installed yet.</div></div><button class="button primary" id="settingsSetup">Set up Veda</button></div>`}
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Model</div><div class="setting-detail">MiniCPM 5 · ${state.selectedQuant.toUpperCase()}</div></div></div>
       <div class="setting-row"><div class="setting-copy"><div class="setting-name">Reasoning</div><div class="setting-detail">${modeLabel(state.mode)}</div></div><button class="button" id="settingsMode">Change</button></div>
       <div class="setting-block">
@@ -644,6 +668,7 @@ function render(): void {
     );
     syncComposer();
     applyDocFilter();
+    placePopovers();
     focusPendingInput();
     if (activeChat().messages.length) requestAnimationFrame(scrollIfNewContent);
   } catch (error) {
@@ -657,6 +682,112 @@ function syncComposer(): void {
   if (!composer) return;
   if (composer.value !== composerDraft) composer.value = composerDraft;
   autoGrow(composer);
+}
+
+// ---------------------------------------------------------------------------
+// Popover placement.
+//
+// The model/scope menus hang off the composer, which sits at the bottom edge
+// of the chat view. A menu that always drops *down* from its trigger therefore
+// runs off the screen. Placement measures the real geometry after every render
+// and flips the menu above the trigger when there is not enough room below.
+// ---------------------------------------------------------------------------
+
+interface PopoverAnchorRect {
+  top: number;
+  bottom: number;
+}
+
+/** Pure decision, unit-tested: does the menu need to open upward? */
+function popoverFlipsUp(
+  anchor: PopoverAnchorRect,
+  menuHeight: number,
+  viewportHeight: number,
+  margin = 8,
+): boolean {
+  const spaceBelow = viewportHeight - anchor.bottom;
+  const spaceAbove = anchor.top;
+  if (spaceBelow >= menuHeight + margin) return false;
+  if (spaceAbove >= menuHeight + margin) return true;
+  // Neither side has the full height; open toward whichever side has more room.
+  return spaceAbove > spaceBelow;
+}
+
+interface PlacementInput {
+  anchorTop: number;
+  anchorBottom: number;
+  menuHeight: number;
+  viewportTop: number;
+  viewportBottom: number;
+  margin?: number;
+}
+
+interface PlacementResult {
+  flipUp: boolean;
+  /** Set when the menu must be height-clamped (with scrolling) to fit. */
+  maxHeight?: number;
+}
+
+/**
+ * Pure, unit-tested placement: where does the menu open, and how tall may it
+ * be? The menu flips above the trigger only when there is not enough room
+ * below, and its height is clamped to the available space so a tall menu (the
+ * scope list with every pack installed) scrolls instead of being clipped by
+ * the viewport's `overflow: hidden`.
+ */
+function popoverPlacement(input: PlacementInput): PlacementResult {
+  const margin = input.margin ?? 8;
+  const spaceBelow = input.viewportBottom - input.anchorBottom;
+  const spaceAbove = input.anchorTop - input.viewportTop;
+  let flipUp = false;
+  if (spaceBelow < input.menuHeight + margin) {
+    flipUp = spaceAbove >= input.menuHeight + margin || spaceAbove > spaceBelow;
+  }
+  const available = Math.max(spaceBelow, spaceAbove) - margin;
+  const maxHeight = input.menuHeight > available ? Math.max(0, available) : undefined;
+  return { flipUp, maxHeight };
+}
+
+/** The visible box that actually clips a menu: its nearest clipping ancestor. */
+function clipViewport(element: Element): { top: number; bottom: number } {
+  let node: HTMLElement | null = element.parentElement;
+  while (node && node !== document.body && node !== document.documentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden") {
+      const rect = node.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom };
+    }
+    node = node.parentElement;
+  }
+  return { top: 0, bottom: document.documentElement.clientHeight };
+}
+
+function placePopovers(): void {
+  const viewportHeight = document.documentElement.clientHeight;
+  if (!viewportHeight) return; // no real layout (e.g. jsdom)
+  for (const menu of Array.from(document.querySelectorAll<HTMLElement>(".popover, .recent-menu"))) {
+    const anchor = menu.parentElement;
+    if (!anchor) continue;
+    // Measure the menu's natural height before clamping it.
+    menu.classList.remove("flip-up");
+    menu.style.maxHeight = "";
+    const anchorRect = anchor.getBoundingClientRect();
+    const viewport = clipViewport(menu);
+    const placement = popoverPlacement({
+      anchorTop: anchorRect.top,
+      anchorBottom: anchorRect.bottom,
+      menuHeight: menu.getBoundingClientRect().height,
+      viewportTop: viewport.top,
+      viewportBottom: viewport.bottom,
+    });
+    menu.classList.toggle("flip-up", placement.flipUp);
+    if (placement.maxHeight !== undefined) {
+      menu.style.maxHeight = `${Math.floor(placement.maxHeight)}px`;
+      menu.style.overflowY = "auto";
+    } else {
+      menu.style.overflowY = "";
+    }
+  }
 }
 
 // The docs filter is applied straight to the DOM so typing stays snappy. A
@@ -742,6 +873,43 @@ function scrollIfNewContent(): void {
   if (signal === lastScrollSignal) return;
   lastScrollSignal = signal;
   scrollMessages();
+}
+
+// ---------------------------------------------------------------------------
+// Streaming status rotation.
+//
+// The backend returns the answer in one piece, so the activity line advances
+// on a timer. It only runs while a reply is actually streaming, and it no-ops
+// once the app element is detached (a reloaded test module), so no timers
+// accumulate across sessions.
+// ---------------------------------------------------------------------------
+
+function anyStreaming(): boolean {
+  return state.chats.some((chat) => chat.messages.some((message) => message.streaming && !message.content));
+}
+
+function advanceStatuses(): void {
+  if (!app.isConnected) return;
+  let changed = false;
+  for (const chat of state.chats) {
+    for (const message of chat.messages) {
+      if (!message.streaming || message.content) continue;
+      const current = STATUS_PHRASES.indexOf(message.status as (typeof STATUS_PHRASES)[number]);
+      message.status = STATUS_PHRASES[(current + 1) % STATUS_PHRASES.length];
+      changed = true;
+    }
+  }
+  if (changed) render();
+}
+
+let statusTimer: number | undefined;
+function scheduleStatusAdvance(): void {
+  if (!app.isConnected || statusTimer !== undefined) return;
+  statusTimer = window.setTimeout(() => {
+    statusTimer = undefined;
+    advanceStatuses();
+    if (anyStreaming()) scheduleStatusAdvance();
+  }, 2400);
 }
 
 function closeMenus(): boolean {
@@ -991,7 +1159,9 @@ async function sendMessage(): Promise<void> {
   chat.messages.push({ id: newId(), role: "user", content: text, createdAt: Date.now(), attachments });
   if (chat.title === "New chat") chat.title = deriveTitle(text);
   const assistantId = newId();
-  chat.messages.push({ id: assistantId, role: "assistant", content: "Searching installed docs…", createdAt: Date.now(), streaming: true });
+  // The reply starts empty: the activity line (a rotating Claude-style status)
+  // stands in for a static "Searching installed docs…" until the answer lands.
+  chat.messages.push({ id: assistantId, role: "assistant", content: "", status: firstStatus(), createdAt: Date.now(), streaming: true });
   chat.updatedAt = Date.now();
 
   state.attachments = [];
@@ -1002,6 +1172,7 @@ async function sendMessage(): Promise<void> {
   pending.set(chatId, { chatId, messageId: assistantId, controller });
   persistChats();
   render();
+  scheduleStatusAdvance();
 
   try {
     const response = await bridge.ask({
@@ -1019,18 +1190,21 @@ async function sendMessage(): Promise<void> {
     applyReply(chatId, assistantId, (message) => {
       message.content = response.content;
       message.sources = response.sources;
+      message.status = undefined;
       message.streaming = false;
     });
   } catch (error) {
     if (isAbort(error)) {
       applyReply(chatId, assistantId, (message) => {
-        message.content = message.content === "Searching installed docs…" ? "Stopped before an answer was produced." : message.content;
+        message.content = message.content ? message.content : "Stopped before an answer was produced.";
+        message.status = undefined;
         message.streaming = false;
         message.stopped = true;
       });
     } else {
       applyReply(chatId, assistantId, (message) => {
         message.content = `Veda could not complete the local request. ${errorText(error)}`;
+        message.status = undefined;
         message.streaming = false;
         message.failed = true;
       });
@@ -1153,6 +1327,19 @@ function bindGlobalEvents(): void {
 
     const install = closest(target, ".install-doc");
     if (install) {
+      // Installing embeds every page with the local model, so without the
+      // model the download would fail only after wasting bandwidth. Route to
+      // setup instead, with a clear reason.
+      if (!modelInstalled()) {
+        toast("Set up Veda first — indexing needs the local model.");
+        state.onboardingOpen = true;
+        state.setupRunning = false;
+        state.setupError = undefined;
+        state.setupStep = 0;
+        storageRemove("veda:onboarding-skipped");
+        render();
+        return;
+      }
       void installDocsetBlocking(install.dataset.docset ?? "");
       return;
     }
@@ -1164,6 +1351,17 @@ function bindGlobalEvents(): void {
     const source = closest(target, "[data-source]");
     if (source) {
       void openSource(source.dataset.source ?? "");
+      return;
+    }
+    const cite = closest(target, ".inline-cite");
+    if (cite) {
+      const citeId = cite.getAttribute("data-cite") ?? "";
+      const messageEl = closest(target, "[data-message-id]");
+      const messageId = messageEl?.getAttribute("data-message-id");
+      const message = activeChat().messages.find((entry) => entry.id === messageId);
+      const cited = message?.sources?.find((entry) => entry.id === citeId);
+      if (cited) void openSource(cited.url);
+      else toast("That source is not available in this answer.");
       return;
     }
     const quant = closest(target, "[data-quant]");
@@ -1292,8 +1490,10 @@ function bindGlobalEvents(): void {
         render();
         return;
       case "settingsSetup":
-        // The skipped flow is reopened from Settings, which also clears the
-        // skip flag so the next launch with a missing model offers setup again.
+      case "docsSetupNow":
+        // The skipped flow is reopened from Settings (or the Docs banner),
+        // which also clears the skip flag so the next launch with a missing
+        // model offers setup again.
         state.settingsOpen = false;
         state.onboardingOpen = true;
         state.setupRunning = false;
@@ -1489,6 +1689,7 @@ function withStallTimeout<T>(
 
 async function init(): Promise<void> {
   bindGlobalEvents();
+  window.addEventListener("resize", placePopovers);
   render();
 
   // Each source is awaited independently: a single failure must never leave
@@ -1548,11 +1749,18 @@ async function init(): Promise<void> {
       const existing = state.downloads.findIndex((download) => download.id === item.id);
       if (existing >= 0) state.downloads[existing] = item;
       else state.downloads.push(item);
-      const docId = item.id.endsWith("-index") ? item.id.slice(0, -6) : undefined;
+      // Both the source archive and the search-index pass carry the docset id
+      // (item.docset), so the doc card mirrors the whole install — download
+      // *and* indexing — instead of sitting at 0% during the download. The
+      // `-index` suffix is kept as a fallback for older backends.
+      const docId = item.docset ?? (item.id.endsWith("-index") ? item.id.slice(0, -6) : undefined);
       const doc = docId ? state.docsets.find((candidate) => candidate.id === docId) : undefined;
       if (doc) {
         doc.progress = item.progress;
-        doc.state = item.state === "installed" ? "installed" : "indexing";
+        if (item.state === "installed") doc.state = "installed";
+        else if (item.state === "error") doc.state = "error";
+        else if (item.id.endsWith("-index")) doc.state = "indexing";
+        else doc.state = "downloading";
       }
       if (state.setupRunning) updateSetupProgress(item.detail || item.name, item.progress);
       scheduleRender();
@@ -1573,4 +1781,8 @@ export const __test = {
   render,
   pending,
   contextMax: CONTEXT_MAX,
+  statusPhrases: STATUS_PHRASES,
+  advanceStatuses,
+  popoverFlipsUp,
+  popoverPlacement,
 };

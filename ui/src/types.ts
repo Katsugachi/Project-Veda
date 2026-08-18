@@ -39,6 +39,9 @@ export interface DownloadItem {
   downloadedBytes: number;
   totalBytes: number;
   speedBytes?: number;
+  /** The docset this download belongs to (source archives and search
+   *  indexes), so the Docs tab can mirror live progress on the doc card. */
+  docset?: string;
 }
 
 export interface ReaderSource {
@@ -74,6 +77,9 @@ export interface ChatMessage {
   sources?: SourceRef[];
   attachments?: Attachment[];
   streaming?: boolean;
+  /** Human-readable activity shown while the reply is still streaming and
+   *  `content` is empty (e.g. "Pondering…", "Searching installed docs…"). */
+  status?: string;
   /** Set when the user interrupted this reply. */
   stopped?: boolean;
   /** Set when the request failed, so the UI can offer a retry. */

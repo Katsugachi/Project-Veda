@@ -12,7 +12,13 @@ function inline(value: string): string {
   rendered = rendered.replace(/`([^`]+)`/g, "<code>$1</code>");
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-  rendered = rendered.replace(/\[(S\d+)\]/g, '<strong class="source-n">[$1]</strong>');
+  // Inline citations are interactive: they carry the source id so the app can
+  // open the matching source when clicked. The id is strictly [S\d+], so the
+  // attribute value is already constrained to a safe token.
+  rendered = rendered.replace(
+    /\[(S\d+)\]/g,
+    '<button type="button" class="inline-cite" data-cite="$1" title="View source $1">[$1]</button>',
+  );
   // Links may only point at safe external schemes. Assistant text and the
   // retrieved documentation it quotes are untrusted, so `javascript:` and
   // other dangerous schemes are dropped instead of becoming clickable.

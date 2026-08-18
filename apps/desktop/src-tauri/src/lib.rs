@@ -1,5 +1,6 @@
 mod commands;
 mod resources;
+mod session;
 mod state;
 
 use state::AppState;
@@ -13,7 +14,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            app.manage(AppState::new(app.handle())?);
+            let state = AppState::new(app.handle())?;
+            let runtime = state.runtime.clone();
+            app.manage(state);
+            // Free the warm model's ~800 MB of pages after a period of
+            // inactivity so an idle Veda does not pin them indefinitely.
+            tauri::async_runtime::spawn(crate::session::session_janitor(runtime));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -55,6 +55,22 @@ function emitProgress(item: DownloadItem): void {
 }
 
 async function simulatedInstall(id: string, name: string, totalBytes: number): Promise<void> {
+  // Source archive download phase. The doc card mirrors this via the `docset`
+  // field, so a real install shows progress for the download *and* the index.
+  for (let step = 1; step <= 2; step += 1) {
+    await delay(300);
+    emitProgress({
+      id: `${id}-source`,
+      name,
+      detail: `Downloading ${name} · step ${step} of 2`,
+      state: "downloading",
+      progress: step * 40,
+      downloadedBytes: Math.round((totalBytes * step * 40) / 100),
+      totalBytes,
+      docset: id,
+    });
+  }
+  // Search index / embedding phase.
   for (let step = 1; step <= 4; step += 1) {
     await delay(420);
     emitProgress({
@@ -62,9 +78,10 @@ async function simulatedInstall(id: string, name: string, totalBytes: number): P
       name,
       detail: `Preparing search · step ${step} of 4`,
       state: "indexing",
-      progress: step * 25,
-      downloadedBytes: Math.round((totalBytes * step) / 4),
+      progress: 40 + step * 15,
+      downloadedBytes: Math.round((totalBytes * (40 + step * 15)) / 100),
       totalBytes,
+      docset: id,
     });
   }
   const doc = browserDocsets.find((candidate) => candidate.id === id);
@@ -74,7 +91,7 @@ async function simulatedInstall(id: string, name: string, totalBytes: number): P
     doc.installedBytes = totalBytes;
   }
   const existing = browserDownloads.findIndex((item) => item.id === `${id}-index`);
-  const ready: DownloadItem = { id: `${id}-index`, name, detail: "Ready", state: "installed", progress: 100, downloadedBytes: totalBytes, totalBytes };
+  const ready: DownloadItem = { id: `${id}-index`, name, detail: "Ready", state: "installed", progress: 100, downloadedBytes: totalBytes, totalBytes, docset: id };
   if (existing >= 0) browserDownloads[existing] = ready; else browserDownloads.push(ready);
   emitProgress(ready);
 }

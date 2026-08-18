@@ -1,4 +1,7 @@
-use crate::state::AppState;
+use crate::{
+    session::{ModelSession, SessionFingerprint},
+    state::AppState,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -6,13 +9,14 @@ use std::{
     io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 use sysinfo::{Disks, System};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 use veda_core::{
-    contextual_error, default_catalog, AskRequest, AskResponse, Catalog, HardwareSnapshot,
-    PreflightReport, SourceRef,
+    contextual_error, default_catalog, is_conversational, AskRequest, AskResponse, Catalog,
+    HardwareSnapshot, ModelQuant, PreflightReport, SourceRef, CONVERSATIONAL_SYSTEM_PROMPT,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +56,10 @@ pub struct DownloadItem {
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub speed_bytes: Option<u64>,
+    /// The docset this download belongs to (source archives and search
+    /// indexes), so the UI can mirror live progress on the matching doc card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docset: Option<String>,
 }
 
 #[tauri::command]
@@ -168,6 +176,7 @@ pub fn list_downloads(state: State<'_, AppState>) -> Vec<DownloadItem> {
                 downloaded_bytes: asset.bytes,
                 total_bytes: asset.bytes,
                 speed_bytes: None,
+                docset: None,
             });
         }
     }
@@ -209,6 +218,7 @@ pub async fn ask_veda(
     request: AskRequest,
     state: State<'_, AppState>,
 ) -> Result<AskResponse, String> {
+    let started = Instant::now();
     let model = model_files(request.model_quant)
         .iter()
         .map(|file| state.data_dir.join("models").join(file))
@@ -227,15 +237,7 @@ pub async fn ask_veda(
             .map_err(|_| "No verified llama.cpp runtime is active. Run setup again.".to_string())?,
     )
     .map_err(|error| contextual_error("The active runtime record is unreadable", &error))?;
-    let index = load_search_index(&state, &request.docsets).await?;
-    if index.is_empty() {
-        return Ok(AskResponse {
-            message_id: uuid::Uuid::new_v4().to_string(),
-            content: "No selected documentation has been indexed yet. Install at least one documentation pack before asking a sourced question.".into(),
-            sources: Vec::new(),
-            trace: None,
-        });
-    }
+
     let mut system = sysinfo::System::new_all();
     system.refresh_memory();
     let available_memory = system.available_memory();
@@ -244,9 +246,9 @@ pub async fn ask_veda(
         .and_then(|value| value.to_str())
         .is_some_and(|name| name.contains("Q8"))
     {
-        veda_core::ModelQuant::Q8
+        ModelQuant::Q8
     } else {
-        veda_core::ModelQuant::Q5
+        ModelQuant::Q5
     };
     // An explicit context choice from Settings wins; 0/absent means automatic,
     // which sizes the context to the memory that is actually free right now
@@ -256,48 +258,102 @@ pub async fn ask_veda(
         veda_core::resolve_context_tokens(request.context_tokens, available_memory, quant);
     let threads = system.cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
-    let mut chat_sidecar = veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
-        executable: active.executable.clone(),
-        model,
+    let fingerprint = SessionFingerprint {
+        model_path: model,
         context_tokens: context,
         gpu_layers,
-        embedding: false,
-        pooling: None,
-        threads,
-    })
-    .await
-    .map_err(|error| contextual_error("Could not start the llama.cpp runtime", &error))?;
+        backend: active.backend.clone(),
+        quant,
+    };
+
+    // Small talk (with no attachments) takes the conversational fast path: no
+    // search plan, no embedding sidecar, no index load — a greeting is answered
+    // by the warm model instead of paying for the whole retrieval pipeline.
+    let conversational = request.attachments.is_empty() && is_conversational(&request.message);
+
+    // Reuse the warm session, or rebuild it when the configuration changed.
+    // A session whose configuration matches — or differs only in having *more*
+    // context than the ask needs — is reused: llama.cpp cannot resize context
+    // in place, but extra headroom is always safe, and this stops the auto
+    // context (sized from available RAM, which wobbles by a few MB between
+    // questions) from re-reading the model on every single ask.
+    let mut slot = state.runtime.lock().await;
+    let mut session = match slot.take() {
+        Some(mut existing)
+            if existing.matches(&fingerprint)
+                || (existing.fingerprint.same_except_context(&fingerprint)
+                    && existing.fingerprint.context_tokens >= fingerprint.context_tokens) =>
+        {
+            existing.touch();
+            Some(existing)
+        }
+        Some(mut stale) => {
+            stale.stop_all().await;
+            None
+        }
+        None => None,
+    };
+    let mut session = match session.take() {
+        Some(session) => session,
+        None => ModelSession::spawn_chat(&active.executable, &fingerprint, threads).await?,
+    };
+
+    if conversational {
+        let content = session
+            .llama
+            .complete(
+                vec![
+                    veda_runtime::ChatMessage {
+                        role: "system".into(),
+                        content: CONVERSATIONAL_SYSTEM_PROMPT.into(),
+                    },
+                    veda_runtime::ChatMessage {
+                        role: "user".into(),
+                        content: request.message.clone(),
+                    },
+                ],
+                veda_core::ReasoningMode::Fast,
+                256,
+                None,
+            )
+            .await
+            .map_err(|error| contextual_error("The local model could not answer", &error))?;
+        session.touch();
+        *slot = Some(session);
+        return Ok(AskResponse {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            content,
+            sources: Vec::new(),
+            trace: Some(veda_core::RetrievalTrace {
+                queries: Vec::new(),
+                lexical_hits: 0,
+                semantic_hits: 0,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            }),
+        });
+    }
+
+    let index = load_search_index(&state, &request.docsets).await?;
+    if index.is_empty() {
+        session.touch();
+        *slot = Some(session);
+        return Ok(AskResponse {
+            message_id: uuid::Uuid::new_v4().to_string(),
+            content: "No selected documentation has been indexed yet. Install at least one documentation pack before asking a sourced question.".into(),
+            sources: Vec::new(),
+            trace: None,
+        });
+    }
     let embedding_model = state
         .data_dir
         .join("models")
         .join("bge-small-en-v1.5-q8_0.gguf");
-    let mut embedding_sidecar =
-        match veda_runtime::LlamaSidecar::spawn(veda_runtime::SidecarConfig {
-            executable: active.executable,
-            model: embedding_model,
-            context_tokens: 512,
-            gpu_layers,
-            embedding: true,
-            pooling: Some("cls".into()),
-            threads,
-        })
-        .await
-        {
-            Ok(sidecar) => sidecar,
-            Err(error) => {
-                let _ = chat_sidecar.stop().await;
-                return Err(contextual_error("Could not start local search", &error));
-            }
-        };
-    let llama = veda_runtime::LlamaClient::new(&chat_sidecar.base_url, &chat_sidecar.api_key)
-        .map_err(|error| contextual_error("Could not reach the local model", &error))?;
-    let embed =
-        veda_runtime::EmbeddingClient::new(&embedding_sidecar.base_url, &embedding_sidecar.api_key)
-            .map_err(|error| {
-                contextual_error("Could not reach the local search runtime", &error)
-            })?;
+    let embed = session
+        .ensure_embedding(&active.executable, &embedding_model, threads)
+        .await?
+        .clone();
     let engine = veda_runtime::VedaEngine::new(
-        llama,
+        session.llama.clone(),
         LocalRetriever {
             index,
             embed,
@@ -308,8 +364,11 @@ pub async fn ask_veda(
         .ask(request)
         .await
         .map_err(|error| contextual_error("The local model could not answer", &error));
-    let _ = embedding_sidecar.stop().await;
-    let _ = chat_sidecar.stop().await;
+    // Keep the warm session even when this answer failed (a transient model
+    // error should not discard ~800 MB of loaded pages), and refresh the idle
+    // clock so the janitor does not evict a session that is still in use.
+    session.touch();
+    *slot = Some(session);
     result
 }
 
