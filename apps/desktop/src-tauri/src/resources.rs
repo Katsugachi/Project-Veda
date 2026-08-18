@@ -391,7 +391,11 @@ async fn index_docset(
                 version: chunk.version.clone(),
                 title: chunk.title.clone(),
                 section: chunk.section.clone(),
-                url: format!("veda://docs/{id}/{}/{#}", chunk.page_path, chunk.anchor),
+                url: format!(
+                    "veda://docs/{id}/{path}#{anchor}",
+                    path = chunk.page_path,
+                    anchor = chunk.anchor
+                ),
                 text: chunk.text.clone(),
                 symbols: chunk.symbols.clone(),
                 embedding,
