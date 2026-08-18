@@ -64,9 +64,9 @@ pub fn evaluate_preflight(snapshot: HardwareSnapshot) -> PreflightReport {
     // explicit choice, gated in the UI on the 12 GiB memory floor the
     // backend enforces before it will download the larger model.
     let recommended_quant = ModelQuant::Q5;
-    // The automatic context is sized from the memory that is actually
-    // available (total RAM minus what is already in use), not the sticker
-    // amount, with the 1.4 GB leeway reserved by `context_budget`.
+    // Automatic context is pinned at 16K (see `context_budget`). The
+    // estimate is still computed so Settings can show the recommended
+    // window; it no longer grows with free RAM.
     let budget = context_budget(snapshot.available_memory_bytes, recommended_quant);
     PreflightReport {
         total_memory_bytes: snapshot.total_memory_bytes,
@@ -116,18 +116,16 @@ mod tests {
     }
 
     #[test]
-    fn recommended_context_uses_available_memory() {
-        // The fixture halves the snapshot's total to simulate used RAM; the
-        // recommended context must follow the *available* figure: 4 GiB
-        // available minus the 1.4 GB leeway and the 1.3 GB Q5 model leaves
-        // room for 103,839 raw tokens, rounded down to the 1K step.
+    fn recommended_context_is_the_fast_automatic_window() {
+        // Automatic is 16K on every machine so llama.cpp never allocates a
+        // 131K KV cache "because the RAM is there".
         assert_eq!(
             evaluate_preflight(snapshot(8 * GIB, 20 * GIB)).recommended_context,
-            103_424
+            crate::context::CONTEXT_TOKENS_AUTO
         );
         assert_eq!(
             evaluate_preflight(snapshot(16 * GIB, 20 * GIB)).recommended_context,
-            crate::context::CONTEXT_TOKENS_MAX
+            crate::context::CONTEXT_TOKENS_AUTO
         );
     }
 }

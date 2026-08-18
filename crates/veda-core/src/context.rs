@@ -31,15 +31,21 @@ pub const CONTEXT_TOKENS_MIN: u32 = 512;
 /// because the RAG evidence plus a sourced answer routinely needs that much
 /// room and a tiny context silently truncates the grounding material.
 pub const CONTEXT_TOKENS_DEFAULT_MIN: u32 = 16_384;
+/// Automatic context is pinned here on purpose. Filling all free RAM up to
+/// MiniCPM's 131K ceiling allocated a multi-gigabyte KV cache, made
+/// llama.cpp's warmup walk a huge graph, and turned a GPU-offloaded 1B model
+/// into a multi-minute wait. 16K is enough for the system prompt, a handful
+/// of retrieved chunks and a sourced answer; users who really want a bigger
+/// window can still type one in Settings.
+pub const CONTEXT_TOKENS_AUTO: u32 = CONTEXT_TOKENS_DEFAULT_MIN;
 
 /// Resolves a user-requested context against what this machine can support.
 ///
-/// `requested` of `None` or `Some(0)` means "automatic", which sizes the
-/// context to the memory that is actually available right now (total RAM
-/// minus whatever other applications are using) with a 1.4 GB safety margin
-/// reserved on top. An explicit request is honoured but clamped to the
-/// supported range so a hand-typed value can never ask llama.cpp for an
-/// impossible allocation.
+/// `requested` of `None` or `Some(0)` means "automatic", which is always
+/// [`CONTEXT_TOKENS_AUTO`] (16K). Automatic used to grow with free RAM up to
+/// 131K and that is what made GPU offload take minutes. An explicit request
+/// is honoured but clamped to the supported range so a hand-typed value can
+/// never ask llama.cpp for an impossible allocation.
 pub fn resolve_context_tokens(
     requested: Option<u32>,
     available_memory_bytes: u64,
@@ -51,41 +57,32 @@ pub fn resolve_context_tokens(
     }
 }
 
-/// Sizes the automatic context to the memory that is actually free.
+/// Sizes the automatic context.
 ///
-/// "Including existing used RAM": `available_memory_bytes` already excludes
-/// what other processes are holding, so the budget can never over-commit a
-/// machine that is already busy. The estimate assumes MiniCPM5-1B with F16
-/// K/V, 24 layers, 2 KV heads and a 64-element head dimension, plus 25%
-/// overhead. The largest whole number of tokens whose KV cache fits in the
-/// RAM left after reserving the 1.4 GB leeway and the model itself is
-/// chosen, rounded down to the UI's 1K step and capped at MiniCPM's
-/// advertised ceiling. The result is never below
-/// [`CONTEXT_TOKENS_DEFAULT_MIN`] (16K) regardless of how little RAM is
-/// available: a sourced answer needs at least that much room, so a
-/// memory-starved machine degrades to the floor instead of being handed an
-/// unusably small context.
+/// Automatic is always [`CONTEXT_TOKENS_AUTO`] (16K). The previous policy
+/// grew the window with free RAM up to 131K, which made llama.cpp allocate a
+/// huge KV cache even when the prompt was a few thousand tokens — the main
+/// reason MiniCPM took minutes with full GPU offload. The estimates below
+/// are still computed so Settings / diagnostics can show how much the
+/// chosen window costs; they no longer drive the automatic value.
+///
+/// An explicit hand-typed value still goes through
+/// [`resolve_context_tokens`] and may be as large as [`CONTEXT_TOKENS_MAX`].
 pub fn context_budget(available_memory_bytes: u64, quant: ModelQuant) -> ContextBudget {
     let model_bytes = match quant {
         ModelQuant::Q5 => 1_300_000_000,
         ModelQuant::Q8 => 1_750_000_000,
     };
-    let headroom = available_memory_bytes.saturating_sub(CONTEXT_MEMORY_LEEWAY_BYTES);
-    let usable_for_kv = headroom.saturating_sub(model_bytes);
     let kv_per_token = 24_u64 * 2 * 2 * 64 * 2;
     let kv_per_token_with_overhead = kv_per_token * 5 / 4;
-    let raw_tokens = usable_for_kv / kv_per_token_with_overhead;
-    let stepped = raw_tokens / 1024 * 1024;
-    let context_tokens = stepped.clamp(
-        u64::from(CONTEXT_TOKENS_DEFAULT_MIN),
-        u64::from(CONTEXT_TOKENS_MAX),
-    ) as u32;
+    let _ = available_memory_bytes;
+    let context_tokens = CONTEXT_TOKENS_AUTO;
     let estimated_kv_bytes = kv_per_token_with_overhead * u64::from(context_tokens);
     ContextBudget {
         context_tokens,
         estimated_model_bytes: model_bytes,
         estimated_kv_bytes,
-        estimated_total_bytes: model_bytes + estimated_kv_bytes + 512 * 1024 * 1024,
+        estimated_total_bytes: model_bytes + estimated_kv_bytes + CONTEXT_MEMORY_LEEWAY_BYTES,
     }
 }
 
@@ -127,31 +124,26 @@ mod tests {
     }
 
     #[test]
-    fn automatic_context_fills_available_ram_with_leeway() {
-        // 4 GiB available with Q8: 1.4 GB leeway + 1.75 GB model leave
-        // 1.07 GiB for the KV cache, which is 74,542 raw tokens rounded down
-        // to the 1K step (73,728).
+    fn automatic_context_stays_fast_regardless_of_ram() {
+        // Filling RAM with a 131K KV cache is what made GPU offload take
+        // minutes. Automatic is therefore pinned at 16K on every machine.
         assert_eq!(
             context_budget(4 * GIB, ModelQuant::Q8).context_tokens,
-            73_728
+            CONTEXT_TOKENS_AUTO
         );
-        // A machine with less free memory gets a smaller context…
         assert_eq!(
             context_budget(3 * GIB, ModelQuant::Q5).context_tokens,
-            33_792
+            CONTEXT_TOKENS_AUTO
         );
-        // …and once RAM is plentiful the ceiling is the model's 131K max.
         assert_eq!(
             context_budget(16 * GIB, ModelQuant::Q5).context_tokens,
-            CONTEXT_TOKENS_MAX
+            CONTEXT_TOKENS_AUTO
         );
-        // The automatic context never drops below the 16K floor, no matter how
-        // little memory is available — it degrades to the floor rather than an
-        // unusably tiny window.
         assert_eq!(
             context_budget(2 * GIB, ModelQuant::Q8).context_tokens,
-            CONTEXT_TOKENS_DEFAULT_MIN
+            CONTEXT_TOKENS_AUTO
         );
+        assert_ne!(CONTEXT_TOKENS_AUTO, CONTEXT_TOKENS_MAX);
     }
 
     #[test]
@@ -182,13 +174,16 @@ mod tests {
     }
 
     #[test]
-    fn context_grows_with_available_ram() {
-        // Skip the sub-floor region: start above the 16K default minimum so
-        // the comparison reflects the budgeted growth, not the floor clamp.
-        let small = context_budget(3 * GIB, ModelQuant::Q5).context_tokens;
-        let medium = context_budget(4 * GIB, ModelQuant::Q5).context_tokens;
-        let large = context_budget(5 * GIB, ModelQuant::Q5).context_tokens;
-        assert!(small < medium && medium < large);
-        assert_eq!(large, CONTEXT_TOKENS_MAX);
+    fn explicit_large_context_is_still_available() {
+        // Users who really want a 64K/131K window can still type it; only the
+        // automatic path is pinned for speed.
+        assert_eq!(
+            resolve_context_tokens(Some(65_536), 16 * GIB, ModelQuant::Q5),
+            65_536
+        );
+        assert_eq!(
+            context_budget(16 * GIB, ModelQuant::Q5).context_tokens,
+            CONTEXT_TOKENS_AUTO
+        );
     }
 }

@@ -43,6 +43,7 @@
 .modal-backdrop { backdrop-filter: none; }
 .onboarding { box-shadow: var(--shadow-panel); }
 
+.docs-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .library-summary { margin: -12px 0 14px; color: var(--muted); font-size: 10.5px; }
 .empty-list { padding: 30px; text-align: center; color: var(--muted); font-size: 12px; }
 .download-row { grid-template-columns: minmax(180px, 1.3fr) minmax(140px, 1fr) 90px; }

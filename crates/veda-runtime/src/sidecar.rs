@@ -121,22 +121,10 @@ impl LlamaSidecar {
         let port = free_port()?;
         let api_key = format!("veda-{}", Uuid::new_v4());
         let mut command = Command::new(&config.executable);
+        for argument in server_args(&config, port, &api_key) {
+            command.arg(argument);
+        }
         command
-            .arg("--model")
-            .arg(&config.model)
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--ctx-size")
-            .arg(config.context_tokens.to_string())
-            .arg("--threads")
-            .arg(config.threads.max(1).to_string())
-            .arg("--n-gpu-layers")
-            .arg(config.gpu_layers.to_string())
-            .arg("--api-key")
-            .arg(&api_key)
-            .arg("--jinja")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -146,17 +134,6 @@ impl LlamaSidecar {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
-        }
-        if config.embedding {
-            command
-                .arg("--embeddings")
-                .arg("--batch-size")
-                .arg("2048")
-                .arg("--ubatch-size")
-                .arg("512");
-            if let Some(pooling) = &config.pooling {
-                command.arg("--pooling").arg(pooling);
-            }
         }
         let logs = Arc::new(LogTail::default());
         let mut sidecar = Self {
@@ -203,6 +180,55 @@ impl Drop for LlamaSidecar {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
     }
+}
+
+/// Flags that make a GPU-offloaded MiniCPM answer in seconds instead of
+/// minutes. Extracted so the exact argv is unit-tested and every spawn path
+/// (chat, embedding, health probe) gets the same treatment.
+///
+/// * `--no-warmup` skips the empty run that walked the whole KV graph.
+/// * `--flash-attn` + q8 KV cache keep the working set on the GPU.
+/// * A 2048/512 batch is the llama.cpp default for fast prompt eval.
+/// * `--parallel 1` so the configured context is not split across slots.
+pub fn server_args(config: &SidecarConfig, port: u16, api_key: &str) -> Vec<String> {
+    let mut args = vec![
+        "--model".into(),
+        config.model.display().to_string(),
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+        "--ctx-size".into(),
+        config.context_tokens.to_string(),
+        "--threads".into(),
+        config.threads.max(1).to_string(),
+        "--n-gpu-layers".into(),
+        config.gpu_layers.to_string(),
+        "--api-key".into(),
+        api_key.to_string(),
+        "--jinja".into(),
+        "--batch-size".into(),
+        "2048".into(),
+        "--ubatch-size".into(),
+        "512".into(),
+        "--no-warmup".into(),
+        "--parallel".into(),
+        "1".into(),
+    ];
+    if config.embedding {
+        args.push("--embeddings".into());
+        if let Some(pooling) = &config.pooling {
+            args.push("--pooling".into());
+            args.push(pooling.clone());
+        }
+    } else {
+        args.push("--flash-attn".into());
+        args.push("--cache-type-k".into());
+        args.push("q8_0".into());
+        args.push("--cache-type-v".into());
+        args.push("q8_0".into());
+    }
+    args
 }
 
 fn free_port() -> std::io::Result<u16> {
@@ -264,5 +290,55 @@ mod tests {
             log: "llama.cpp output:\nbind() failed: Address already in use".into(),
         };
         assert!(!is_bind_collision(&timeout));
+    }
+
+    #[test]
+    fn chat_sidecar_uses_the_fast_gpu_flags() {
+        let args = server_args(
+            &SidecarConfig {
+                executable: "llama-server".into(),
+                model: "minicpm.gguf".into(),
+                context_tokens: 16_384,
+                gpu_layers: 99,
+                embedding: false,
+                pooling: None,
+                threads: 4,
+            },
+            8765,
+            "veda-test",
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("--ctx-size 16384"));
+        assert!(joined.contains("--n-gpu-layers 99"));
+        assert!(joined.contains("--no-warmup"));
+        assert!(joined.contains("--flash-attn"));
+        assert!(joined.contains("--cache-type-k q8_0"));
+        assert!(joined.contains("--cache-type-v q8_0"));
+        assert!(joined.contains("--batch-size 2048"));
+        assert!(joined.contains("--ubatch-size 512"));
+        assert!(joined.contains("--parallel 1"));
+        assert!(!joined.contains("--embeddings"));
+    }
+
+    #[test]
+    fn embedding_sidecar_does_not_enable_flash_attn() {
+        let args = server_args(
+            &SidecarConfig {
+                executable: "llama-server".into(),
+                model: "bge.gguf".into(),
+                context_tokens: 512,
+                gpu_layers: 99,
+                embedding: true,
+                pooling: Some("cls".into()),
+                threads: 2,
+            },
+            8766,
+            "veda-test",
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("--embeddings"));
+        assert!(joined.contains("--pooling cls"));
+        assert!(joined.contains("--no-warmup"));
+        assert!(!joined.contains("--flash-attn"));
     }
 }

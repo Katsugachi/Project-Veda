@@ -6,10 +6,15 @@ pub struct LexicalHit {
     pub score: f32,
 }
 
+/// Inverted BM25 index. The previous implementation scanned every document
+/// for every query term (O(N · |q|)). Technical questions typically hit a
+/// handful of identifiers, so walking the postings list is orders of magnitude
+/// cheaper once a pack has thousands of chunks.
 #[derive(Debug, Default)]
 pub struct LexicalIndex {
     document_lengths: Vec<usize>,
-    term_frequencies: Vec<HashMap<String, usize>>,
+    /// term → (document, term-frequency)
+    postings: HashMap<String, Vec<(usize, u16)>>,
     document_frequencies: HashMap<String, usize>,
     average_length: f32,
 }
@@ -18,17 +23,21 @@ impl LexicalIndex {
     pub fn build(texts: impl IntoIterator<Item = String>) -> Self {
         let mut index = Self::default();
         for text in texts {
+            let document = index.document_lengths.len();
             let terms = tokenize(&text);
             let mut frequencies = HashMap::new();
             for term in &terms {
-                *frequencies.entry(term.clone()).or_insert(0) += 1;
+                *frequencies.entry(term.clone()).or_insert(0_u16) += 1;
             }
-            let unique = frequencies.keys().cloned().collect::<HashSet<_>>();
-            for term in unique {
-                *index.document_frequencies.entry(term).or_insert(0) += 1;
+            for (term, frequency) in frequencies {
+                *index.document_frequencies.entry(term.clone()).or_insert(0) += 1;
+                index
+                    .postings
+                    .entry(term)
+                    .or_default()
+                    .push((document, frequency));
             }
             index.document_lengths.push(terms.len());
-            index.term_frequencies.push(frequencies);
         }
         if !index.document_lengths.is_empty() {
             index.average_length = index.document_lengths.iter().sum::<usize>() as f32
@@ -38,46 +47,63 @@ impl LexicalIndex {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<LexicalHit> {
+        self.search_filtered(query, limit, None)
+    }
+
+    /// BM25 over the postings of `query`, optionally restricted to `allowed`
+    /// document ids. Restriction happens *before* scoring so a C++-heavy
+    /// index cannot drown a Python question.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        allowed: Option<&HashSet<usize>>,
+    ) -> Vec<LexicalHit> {
         let terms = tokenize(query).into_iter().collect::<HashSet<_>>();
-        if terms.is_empty() || self.term_frequencies.is_empty() {
+        if terms.is_empty() || self.postings.is_empty() {
             return Vec::new();
         }
-        let document_count = self.term_frequencies.len() as f32;
+        let document_count = self.document_lengths.len() as f32;
         let k1 = 1.2_f32;
         let b = 0.75_f32;
-        let mut results = Vec::new();
-        for (document, frequencies) in self.term_frequencies.iter().enumerate() {
-            let length = self.document_lengths[document] as f32;
-            let mut score = 0.0_f32;
-            for term in &terms {
-                let frequency = *frequencies.get(term).unwrap_or(&0) as f32;
-                if frequency == 0.0 {
+        let mut scores: HashMap<usize, f32> = HashMap::new();
+        for term in &terms {
+            let Some(postings) = self.postings.get(term) else {
+                continue;
+            };
+            let document_frequency = *self.document_frequencies.get(term).unwrap_or(&0) as f32;
+            let inverse_document_frequency =
+                ((document_count - document_frequency + 0.5) / (document_frequency + 0.5) + 1.0)
+                    .ln();
+            for &(document, frequency) in postings {
+                if allowed.is_some_and(|set| !set.contains(&document)) {
                     continue;
                 }
-                let document_frequency = *self.document_frequencies.get(term).unwrap_or(&0) as f32;
-                let inverse_document_frequency = ((document_count - document_frequency + 0.5)
-                    / (document_frequency + 0.5)
-                    + 1.0)
-                    .ln();
+                let frequency = frequency as f32;
+                let length = self.document_lengths[document] as f32;
                 let denominator =
                     frequency + k1 * (1.0 - b + b * length / self.average_length.max(1.0));
-                score += inverse_document_frequency * frequency * (k1 + 1.0) / denominator;
-            }
-            if score > 0.0 {
-                results.push(LexicalHit { document, score });
+                *scores.entry(document).or_insert(0.0) +=
+                    inverse_document_frequency * frequency * (k1 + 1.0) / denominator;
             }
         }
-        results.sort_by(|left, right| right.score.total_cmp(&left.score));
-        results.truncate(limit);
+        let mut results = scores
+            .into_iter()
+            .filter(|(_, score)| *score > 0.0)
+            .map(|(document, score)| LexicalHit { document, score })
+            .collect::<Vec<_>>();
+        take_top_k(&mut results, limit, |left, right| {
+            right.score.total_cmp(&left.score)
+        });
         results
     }
 
     pub fn len(&self) -> usize {
-        self.term_frequencies.len()
+        self.document_lengths.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.term_frequencies.is_empty()
+        self.document_lengths.is_empty()
     }
 }
 
@@ -112,6 +138,18 @@ fn push_term(terms: &mut Vec<String>, term: &str) {
     }
 }
 
+/// Partial top-k: only the winners are fully sorted.
+pub(crate) fn take_top_k<T, F>(items: &mut Vec<T>, k: usize, compare: F)
+where
+    F: Fn(&T, &T) -> std::cmp::Ordering,
+{
+    if items.len() > k {
+        items.select_nth_unstable_by(k, |left, right| compare(left, right));
+        items.truncate(k);
+    }
+    items.sort_by(compare);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +171,26 @@ mod tests {
         assert!(terms.contains(&"std::vector::push_back".into()));
         assert!(terms.contains(&"vector".into()));
         assert!(terms.contains(&"push_back".into()));
+    }
+
+    #[test]
+    fn filtered_search_ignores_out_of_scope_documents() {
+        let index = LexicalIndex::build([
+            "asyncio.TaskGroup".into(),
+            "asyncio.TaskGroup again".into(),
+            "unrelated".into(),
+        ]);
+        let mut allowed = HashSet::new();
+        allowed.insert(1);
+        let hits = index.search_filtered("asyncio.TaskGroup", 8, Some(&allowed));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].document, 1);
+    }
+
+    #[test]
+    fn missing_terms_do_not_scan_the_corpus() {
+        let index = LexicalIndex::build(std::iter::repeat_with(|| "alpha beta".into()).take(2_000));
+        let hits = index.search("zzzz-not-a-term", 8);
+        assert!(hits.is_empty());
     }
 }

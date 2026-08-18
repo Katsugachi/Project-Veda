@@ -105,7 +105,7 @@ describe("Round 8 — citations are clickable", () => {
 });
 
 describe("Round 8 — Docs tab: model gating and live progress", () => {
-  it("asks the user to set up the model before installing docs, and routes Download to setup", async () => {
+  it("lets docs be installed without the model, and still offers setup for semantic search", async () => {
     await loadApp({
       bridge: (actual) => ({
         ...actual,
@@ -118,13 +118,18 @@ describe("Round 8 — Docs tab: model gating and live progress", () => {
     click('[data-view="docs"]');
     await flush(30);
     expect($(".setup-required")).toBeTruthy();
+    expect(document.body.textContent).toContain("Keyword search works now");
 
-    // A Download click must not start an install that would fail after wasting
-    // bandwidth; it routes into first-run setup instead.
+    // Download must stay on the Docs tab — adding docs cannot be gated on
+    // MiniCPM. The previous gate is what made the tab feel nonexistent.
     const install = $$(".install-doc").find((node) => node.dataset.docset === "html")!;
     install.click();
     await flush(20);
-    expect($(".onboarding")).toBeTruthy();
+    expect($(".onboarding")).toBeNull();
+    await waitFor(() => {
+      const card = $$(".doc-card").find((c) => c.textContent?.includes("HTML"));
+      return Boolean(card?.textContent?.includes("Installed"));
+    }, 12000);
   });
 
   it("mirrors source-download progress on the doc card, not just the index phase", async () => {

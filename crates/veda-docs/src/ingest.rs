@@ -17,7 +17,7 @@ pub fn ingest_directory(root: &Path, canonical_base: &str) -> Result<Vec<DocPage
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "html" | "htm" | "md" | "markdown") {
+        if !is_doc_extension(&extension) {
             continue;
         }
         let relative = entry
@@ -35,16 +35,124 @@ pub fn ingest_directory(root: &Path, canonical_base: &str) -> Result<Vec<DocPage
             canonical_base.trim_end_matches('/'),
             relative.trim_start_matches('/')
         );
-        let page = if matches!(extension.as_str(), "md" | "markdown") {
-            parse_markdown(&relative, &fallback_canonical, &content, canonical_base)
-        } else {
-            parse_html(&relative, &fallback_canonical, &content)
-        };
+        let page = parse_document(
+            &relative,
+            &fallback_canonical,
+            &content,
+            canonical_base,
+            &extension,
+        );
         if !page.sections.is_empty() {
             pages.push(page);
         }
     }
     Ok(pages)
+}
+
+/// Ingests an in-memory file list (browser file picker / tests) the same way
+/// [`ingest_directory`] walks a folder.
+pub fn ingest_memory(
+    files: &[(String, String)],
+    canonical_base: &str,
+) -> Result<Vec<DocPage>, IngestError> {
+    let mut pages = Vec::new();
+    for (relative, content) in files {
+        let relative = relative.replace('\\', "/");
+        if relative.split('/').any(|part| part == "..") {
+            return Err(IngestError::OutsideRoot);
+        }
+        let extension = relative
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !is_doc_extension(&extension) {
+            continue;
+        }
+        let fallback_canonical = format!(
+            "{}/{}",
+            canonical_base.trim_end_matches('/'),
+            relative.trim_start_matches('/')
+        );
+        let page = parse_document(
+            &relative,
+            &fallback_canonical,
+            content,
+            canonical_base,
+            &extension,
+        );
+        if !page.sections.is_empty() {
+            pages.push(page);
+        }
+    }
+    Ok(pages)
+}
+
+fn is_doc_extension(extension: &str) -> bool {
+    matches!(
+        extension,
+        "html" | "htm" | "md" | "markdown" | "txt" | "rst" | "text"
+    )
+}
+
+fn parse_document(
+    relative: &str,
+    fallback_canonical: &str,
+    content: &str,
+    canonical_base: &str,
+    extension: &str,
+) -> DocPage {
+    match extension {
+        "md" | "markdown" | "rst" => {
+            parse_markdown(relative, fallback_canonical, content, canonical_base)
+        }
+        "html" | "htm" => parse_html(relative, fallback_canonical, content),
+        _ => parse_plaintext(relative, fallback_canonical, content),
+    }
+}
+
+pub fn parse_plaintext(path: &str, canonical_url: &str, source: &str) -> DocPage {
+    let title = title_from_path(path);
+    let mut sections = Vec::<DocSection>::new();
+    let mut current = String::new();
+    for line in source.lines() {
+        if line.trim().is_empty() {
+            if !current.trim().is_empty() {
+                sections.push(DocSection {
+                    heading: title.clone(),
+                    anchor: slug(&title),
+                    text: current.trim().into(),
+                    code: Vec::new(),
+                });
+                current.clear();
+            }
+            continue;
+        }
+        current.push_str(line.trim());
+        current.push('\n');
+    }
+    if !current.trim().is_empty() {
+        sections.push(DocSection {
+            heading: title.clone(),
+            anchor: "top".into(),
+            text: current.trim().into(),
+            code: Vec::new(),
+        });
+    } else if sections.is_empty() && !source.trim().is_empty() {
+        sections.push(DocSection {
+            heading: title.clone(),
+            anchor: "top".into(),
+            text: source.trim().into(),
+            code: Vec::new(),
+        });
+    }
+    DocPage {
+        path: path.into(),
+        title,
+        canonical_url: canonical_url.into(),
+        symbols: Vec::new(),
+        sections,
+    }
 }
 
 pub fn parse_html(path: &str, canonical_url: &str, source: &str) -> DocPage {
@@ -331,5 +439,36 @@ mod tests {
             .canonical_url
             .ends_with("Web/JavaScript/Reference/Global_Objects/Array/map"));
         assert!(page.symbols.contains(&"Array.prototype.map".into()));
+    }
+
+    #[test]
+    fn memory_ingest_accepts_markdown_and_plain_text() {
+        let pages = ingest_memory(
+            &[
+                (
+                    "notes/intro.md".into(),
+                    "# Hello\n\nThis is a local note about `std::vector`.".into(),
+                ),
+                (
+                    "notes/readme.txt".into(),
+                    "Plain text documentation for the project.\n\nSecond paragraph.".into(),
+                ),
+                ("notes/skip.bin".into(), "not documentation".into()),
+            ],
+            "veda://local/notes",
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(pages.iter().any(|page| page.title.contains("Hello")));
+    }
+
+    #[test]
+    fn memory_ingest_rejects_parent_directory_escape() {
+        let error = ingest_memory(
+            &[("../secret.md".into(), "# no".into())],
+            "veda://local/notes",
+        )
+        .unwrap_err();
+        assert!(matches!(error, IngestError::OutsideRoot));
     }
 }

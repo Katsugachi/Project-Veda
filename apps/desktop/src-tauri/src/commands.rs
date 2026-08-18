@@ -12,7 +12,7 @@ use std::{
     time::Instant,
 };
 use sysinfo::{Disks, System};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 use veda_core::{
     contextual_error, default_catalog, is_conversational, AskRequest, AskResponse, Catalog,
@@ -149,7 +149,51 @@ pub fn list_docsets(state: State<'_, AppState>) -> Vec<Docset> {
             }
             docset
         })
+        .chain(list_local_docsets(&state))
         .collect()
+}
+
+fn list_local_docsets(state: &AppState) -> Vec<Docset> {
+    let root = state.data_dir.join("docsets");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut locals = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("local-") {
+            continue;
+        }
+        let manifest_path = entry.path().join("manifest.json");
+        let index_path = state
+            .data_dir
+            .join("indexes")
+            .join(format!("{name}.json.zst"));
+        let Some(manifest) = std::fs::read(&manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<veda_docs::DocPackManifest>(&bytes).ok())
+        else {
+            continue;
+        };
+        if !index_path.exists() {
+            continue;
+        }
+        locals.push(Docset {
+            id: name,
+            name: manifest.name,
+            detail: "Your documentation, searchable offline.".into(),
+            version: "local".into(),
+            compressed_bytes: 0,
+            installed_bytes: 0,
+            state: "installed".into(),
+            progress: 100.0,
+            pages: Some(manifest.page_count),
+            accent: "#c4a574".into(),
+            initials: "YO".into(),
+        });
+    }
+    locals.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    locals
 }
 
 #[tauri::command]
@@ -189,33 +233,90 @@ pub async fn install_docset(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let id = match id.as_str() {
-        "python" => veda_core::DocsetId::Python,
-        "cpp" => veda_core::DocsetId::Cpp,
-        "html" => veda_core::DocsetId::Html,
-        "css" => veda_core::DocsetId::Css,
-        "javascript" => veda_core::DocsetId::Javascript,
-        _ => return Err(format!("unknown documentation pack: {id}")),
-    };
+    if id.starts_with("local-") || id == "local" {
+        return Err("local documentation is added with Add your own docs.".into());
+    }
+    let id = veda_core::DocsetId::parse_official(&id)
+        .ok_or_else(|| format!("unknown documentation pack: {id}"))?;
     crate::resources::install_docset(app, &state, id).await
 }
 
 #[tauri::command]
 pub async fn remove_docset(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let id = match id.as_str() {
-        "python" => veda_core::DocsetId::Python,
-        "cpp" => veda_core::DocsetId::Cpp,
-        "html" => veda_core::DocsetId::Html,
-        "css" => veda_core::DocsetId::Css,
-        "javascript" => veda_core::DocsetId::Javascript,
-        _ => return Err(format!("unknown documentation pack: {id}")),
-    };
+    if id.starts_with("local-") || id == "local" {
+        return crate::resources::remove_local_docset(&state, &id).await;
+    }
+    let id = veda_core::DocsetId::parse_official(&id)
+        .ok_or_else(|| format!("unknown documentation pack: {id}"))?;
     crate::resources::remove_docset(&state, id).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDocFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[tauri::command]
+pub async fn install_local_docs(
+    name: String,
+    files: Vec<LocalDocFile>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Docset, String> {
+    if files.is_empty() {
+        return Err("Choose at least one Markdown, HTML or text file.".into());
+    }
+    let mapped = files
+        .into_iter()
+        .map(|file| (file.path, file.content))
+        .collect();
+    crate::resources::install_local_docs(app, &state, name, Some(mapped), None).await
+}
+
+#[tauri::command]
+pub async fn pick_and_install_local_docs(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<Docset>, String> {
+    let folder = pick_docs_folder(&app).await?;
+    let Some(folder) = folder else {
+        return Ok(None);
+    };
+    let name = folder
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Local docs")
+        .to_string();
+    crate::resources::install_local_docs(app, &state, name, None, Some(folder))
+        .await
+        .map(Some)
+}
+
+async fn pick_docs_folder(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |folder| {
+        let path = folder.and_then(|picked| picked.into_path().ok());
+        let _ = sender.send(path);
+    });
+    receiver
+        .await
+        .map_err(|_| "The folder picker closed unexpectedly.".to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AskTokenEvent {
+    chat_id: String,
+    text: String,
 }
 
 #[tauri::command]
 pub async fn ask_veda(
     request: AskRequest,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AskResponse, String> {
     let started = Instant::now();
@@ -251,13 +352,17 @@ pub async fn ask_veda(
         ModelQuant::Q5
     };
     // An explicit context choice from Settings wins; 0/absent means automatic,
-    // which sizes the context to the memory that is actually free right now
-    // (available RAM, i.e. total minus what is already in use), leaving the
-    // 1.4 GB leeway so llama.cpp can never be asked to over-commit.
+    // which is pinned at 16K so llama.cpp never allocates a 131K KV cache
+    // just because the machine has free RAM.
     let context =
         veda_core::resolve_context_tokens(request.context_tokens, available_memory, quant);
-    let threads = system.cpus().len().clamp(1, 16);
     let gpu_layers = if active.backend == "cpu" { 0 } else { 99 };
+    // With the model on the GPU, extra CPU threads just fight the driver.
+    let threads = if gpu_layers > 0 {
+        system.cpus().len().clamp(1, 4)
+    } else {
+        system.cpus().len().clamp(1, 8)
+    };
     let fingerprint = SessionFingerprint {
         model_path: model,
         context_tokens: context,
@@ -298,10 +403,22 @@ pub async fn ask_veda(
         None => ModelSession::spawn_chat(&active.executable, &fingerprint, threads).await?,
     };
 
+    let token_chat = request.chat_id.clone();
+    let token_app = app.clone();
+    let mut on_token = move |text: &str| {
+        let _ = token_app.emit(
+            "ask-token",
+            AskTokenEvent {
+                chat_id: token_chat.clone(),
+                text: text.to_string(),
+            },
+        );
+    };
+
     if conversational {
         let content = session
             .llama
-            .complete(
+            .complete_with_sink(
                 vec![
                     veda_runtime::ChatMessage {
                         role: "system".into(),
@@ -313,8 +430,9 @@ pub async fn ask_veda(
                     },
                 ],
                 veda_core::ReasoningMode::Fast,
-                256,
+                192,
                 None,
+                Some(&mut on_token),
             )
             .await
             .map_err(|error| contextual_error("The local model could not answer", &error))?;
@@ -348,10 +466,18 @@ pub async fn ask_veda(
         .data_dir
         .join("models")
         .join("bge-small-en-v1.5-q8_0.gguf");
-    let embed = session
-        .ensure_embedding(&active.executable, &embedding_model, threads)
-        .await?
-        .clone();
+    // Lexical-only indexes (and a missing BGE file) must still answer.
+    // Forcing the embedding sidecar here is what made "add docs without
+    // the model" a lie at ask time.
+    let embed = if embedding_model.exists() {
+        session
+            .ensure_embedding(&active.executable, &embedding_model, threads)
+            .await
+            .ok()
+            .cloned()
+    } else {
+        None
+    };
     let engine = veda_runtime::VedaEngine::new(
         session.llama.clone(),
         LocalRetriever {
@@ -361,7 +487,7 @@ pub async fn ask_veda(
         },
     );
     let result = engine
-        .ask(request)
+        .ask_with_sink(request, Some(&mut on_token))
         .await
         .map_err(|error| contextual_error("The local model could not answer", &error));
     // Keep the warm session even when this answer failed (a transient model
@@ -392,7 +518,7 @@ struct ActiveRuntime {
 
 struct LocalRetriever {
     index: Arc<veda_search::HybridIndex>,
-    embed: veda_runtime::EmbeddingClient,
+    embed: Option<veda_runtime::EmbeddingClient>,
     allowed_docsets: Vec<veda_core::DocsetId>,
 }
 
@@ -402,7 +528,14 @@ impl veda_runtime::Retriever for LocalRetriever {
         &self,
         plan: &veda_core::SearchQueryPlan,
     ) -> Result<Vec<veda_runtime::RetrievedChunk>, anyhow::Error> {
-        let query_vectors = self.embed.embed_queries(&plan.queries).await?;
+        let query_vectors = if let Some(embed) = &self.embed {
+            match embed.embed_queries(&plan.queries).await {
+                Ok(vectors) => vectors,
+                Err(_) => plan.queries.iter().map(|_| Vec::new()).collect(),
+            }
+        } else {
+            plan.queries.iter().map(|_| Vec::new()).collect()
+        };
         let docsets = if plan.docsets.is_empty() {
             self.allowed_docsets.clone()
         } else {
@@ -442,6 +575,8 @@ impl veda_runtime::Retriever for LocalRetriever {
                     lexical_score: hit.lexical_score,
                     semantic_score: hit.semantic_score,
                 };
+                // chunk.id includes the pack version (see chunk_page) so two
+                // local libraries that both have readme.md stay distinct.
                 merged
                     .entry(chunk.id.clone())
                     .and_modify(|current| {
@@ -472,6 +607,14 @@ async fn load_search_index(
         let path = index_dir.join(format!("{}.json.zst", docset.as_str()));
         if path.exists() {
             paths.push(path);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(&index_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("local-") && name.ends_with(".json.zst") {
+                paths.push(entry.path());
+            }
         }
     }
     let chunks =

@@ -315,6 +315,7 @@ fn parse_docset(value: &str) -> Result<DocsetId> {
         "html" => Ok(DocsetId::Html),
         "css" => Ok(DocsetId::Css),
         "javascript" | "js" => Ok(DocsetId::Javascript),
+        "local" => Ok(DocsetId::Local),
         _ => anyhow::bail!("unknown docset id: {value}"),
     }
 }

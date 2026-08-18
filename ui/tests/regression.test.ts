@@ -745,7 +745,7 @@ describe("Q5 default, Q8 gating and setup failures", () => {
     click("#settingsButton");
     await flush(20);
     expect($("#contextDetail")!.textContent).toContain("Automatic");
-    expect($("#contextDetail")!.textContent).toContain("131,072 on this device");
+    expect($("#contextDetail")!.textContent).toContain("16,384 on this device");
   });
 });
 

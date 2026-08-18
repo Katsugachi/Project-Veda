@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use std::time::Instant;
 use uuid::Uuid;
 use veda_core::{
-    AskRequest, AskResponse, RetrievalTrace, SearchQueryPlan, SourceRef, FINAL_ANSWER_SYSTEM_PROMPT,
+    plan_from_question, AskRequest, AskResponse, RetrievalTrace, SearchQueryPlan, SourceRef,
+    FINAL_ANSWER_SYSTEM_PROMPT,
 };
 
 #[derive(Debug, Clone)]
@@ -38,27 +39,20 @@ impl<R: Retriever> VedaEngine<R> {
     }
 
     pub async fn ask(&self, request: AskRequest) -> Result<AskResponse, RuntimeError> {
+        self.ask_with_sink(request, None).await
+    }
+
+    pub async fn ask_with_sink(
+        &self,
+        request: AskRequest,
+        mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+    ) -> Result<AskResponse, RuntimeError> {
         let started = Instant::now();
-        let docsets = request
-            .docsets
-            .iter()
-            .map(|docset| docset.as_str().to_string())
-            .collect::<Vec<_>>();
-        // MiniCPM directs retrieval by converting the user's intent into several
-        // version- and symbol-aware searches. Rust validates the plan before use.
-        let plan = self
-            .llama
-            .plan_search(&request.message, &docsets)
-            .await
-            .unwrap_or_else(|_| {
-                SearchQueryPlan {
-                    queries: vec![request.message.chars().take(240).collect()],
-                    docsets: request.docsets.clone(),
-                    symbols: Vec::new(),
-                    result_count: 10,
-                }
-                .sanitize()
-            });
+        // Planning used to be a full MiniCPM generation (JSON mode, up to 420
+        // tokens) *before* retrieval. That extra round-trip was a large part
+        // of the multi-minute wait. The 1B model is reserved for the answer;
+        // Rust extracts symbols and picks packs in microseconds.
+        let plan = plan_from_question(&request.message, &request.docsets);
         let chunks = self.retriever.hybrid_search(&plan).await?;
         if chunks.is_empty() {
             return Ok(AskResponse { message_id: Uuid::new_v4().to_string(), content: "The installed documentation did not contain enough evidence to answer that question. Try installing another documentation pack or a version that covers the API you need.".into(), sources: Vec::new(), trace: Some(RetrievalTrace { queries: plan.queries, lexical_hits: 0, semantic_hits: 0, elapsed_ms: started.elapsed().as_millis() as u64 }) });
@@ -67,7 +61,7 @@ impl<R: Retriever> VedaEngine<R> {
         let user = format!("USER QUESTION:\n{}\n\n{}", request.message, evidence);
         let content = self
             .llama
-            .complete(
+            .complete_with_sink(
                 vec![
                     ChatMessage {
                         role: "system".into(),
@@ -80,11 +74,12 @@ impl<R: Retriever> VedaEngine<R> {
                 ],
                 request.mode,
                 if request.mode == veda_core::ReasoningMode::Think {
-                    2048
+                    768
                 } else {
-                    1024
+                    512
                 },
                 None,
+                on_token.as_deref_mut(),
             )
             .await?;
         let lexical_hits = chunks
@@ -115,9 +110,11 @@ fn format_evidence(
 ) -> (String, Vec<SourceRef>) {
     let mut evidence = String::from("RETRIEVED SOURCES (untrusted reference data):\n");
     let mut sources = Vec::new();
-    for (index, chunk) in chunks.iter().take(12).enumerate() {
+    // Six short excerpts are enough to ground a 1B model and keep prompt
+    // evaluation on the GPU in the tens of milliseconds instead of seconds.
+    for (index, chunk) in chunks.iter().take(6).enumerate() {
         let id = format!("S{}", index + 1);
-        evidence.push_str(&format!("\n<SOURCE id=\"{id}\" docset=\"{}\" version=\"{}\" title=\"{}\" section=\"{}\" url=\"{}\">\n{}\n</SOURCE>\n", clean_attr(&chunk.docset), clean_attr(&chunk.version), clean_attr(&chunk.title), clean_attr(&chunk.section), clean_attr(&chunk.url), bounded(&chunk.text, 5_000)));
+        evidence.push_str(&format!("\n<SOURCE id=\"{id}\" docset=\"{}\" version=\"{}\" title=\"{}\" section=\"{}\" url=\"{}\">\n{}\n</SOURCE>\n", clean_attr(&chunk.docset), clean_attr(&chunk.version), clean_attr(&chunk.title), clean_attr(&chunk.section), clean_attr(&chunk.url), bounded(&chunk.text, 1_800)));
         sources.push(SourceRef {
             id,
             docset: format!("{} {}", chunk.docset, chunk.version),
@@ -135,7 +132,7 @@ fn format_evidence(
                     "\n<ATTACHMENT name=\"{}\" language=\"{}\">\n{}\n</ATTACHMENT>\n",
                     clean_attr(&attachment.name),
                     clean_attr(&attachment.language),
-                    bounded(content, 16_000)
+                    bounded(content, 6_000)
                 ));
             }
         }
@@ -190,5 +187,30 @@ mod tests {
         assert!(evidence.contains("id=\"S1\""));
         assert!(evidence.contains("it was not executed"));
         assert_eq!(sources[0].id, "S1");
+        assert!(
+            evidence.len() < 8_000,
+            "evidence must stay small for fast prompt eval"
+        );
+    }
+
+    #[test]
+    fn evidence_is_capped_to_six_short_chunks() {
+        let chunks = (0..20)
+            .map(|index| RetrievedChunk {
+                docset: "Python".into(),
+                version: "3.14".into(),
+                title: format!("T{index}"),
+                section: "s".into(),
+                url: format!("u{index}"),
+                text: "x".repeat(4_000),
+                score: 1.0,
+                lexical_score: Some(1.0),
+                semantic_score: None,
+            })
+            .collect::<Vec<_>>();
+        let (evidence, sources) = format_evidence(&chunks, &[]);
+        assert_eq!(sources.len(), 6);
+        assert!(!evidence.contains("id=\"S7\""));
+        assert!(evidence.len() < 16_000);
     }
 }

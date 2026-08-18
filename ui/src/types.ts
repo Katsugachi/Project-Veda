@@ -16,8 +16,13 @@ export interface PreflightReport {
   warnings: string[];
 }
 
+export interface LocalDocFile {
+  path: string;
+  content: string;
+}
+
 export interface Docset {
-  id: "python" | "cpp" | "html" | "css" | "javascript";
+  id: string;
   name: string;
   detail: string;
   version: string;
@@ -100,7 +105,7 @@ export interface AskRequest {
   mode: ReasoningMode;
   docsets: string[];
   attachments: Attachment[];
-  /** 0 means "choose automatically from this machine's memory". */
+  /** 0 means automatic (16,384 tokens). An explicit value is honoured. */
   contextTokens?: number;
   /** The model quantization the UI is configured for; the backend loads the
    *  matching model file when it is installed. */
