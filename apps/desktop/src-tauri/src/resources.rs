@@ -391,7 +391,7 @@ async fn index_docset(
                 version: chunk.version.clone(),
                 title: chunk.title.clone(),
                 section: chunk.section.clone(),
-                url: format!("veda://docs/{id}/{}#{}", chunk.page_path, chunk.anchor),
+                url: format!("veda://docs/{id}/{}/{#}", chunk.page_path, chunk.anchor),
                 text: chunk.text.clone(),
                 symbols: chunk.symbols.clone(),
                 embedding,
@@ -509,7 +509,11 @@ async fn write_lexical_index(
             version: chunk.version.clone(),
             title: chunk.title.clone(),
             section: chunk.section.clone(),
-            url: format!("veda://docs/{item_id}/{}#{}", chunk.page_path, chunk.anchor),
+            url: format!(
+                "veda://docs/{item_id}/{path}#{anchor}",
+                path = chunk.page_path,
+                anchor = chunk.anchor
+            ),
             text: chunk.text.clone(),
             symbols: chunk.symbols.clone(),
             embedding: Vec::new(),

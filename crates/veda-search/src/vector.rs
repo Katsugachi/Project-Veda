@@ -110,8 +110,6 @@ impl VectorIndex {
 pub enum VectorIndexError {
     #[error("embedding vector dimensions do not match")]
     DimensionMismatch,
-    #[error("embedding vectors cannot be empty")]
-    EmptyVector,
 }
 
 pub fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {

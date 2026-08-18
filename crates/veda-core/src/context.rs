@@ -68,14 +68,13 @@ pub fn resolve_context_tokens(
 ///
 /// An explicit hand-typed value still goes through
 /// [`resolve_context_tokens`] and may be as large as [`CONTEXT_TOKENS_MAX`].
-pub fn context_budget(available_memory_bytes: u64, quant: ModelQuant) -> ContextBudget {
+pub fn context_budget(_available_memory_bytes: u64, quant: ModelQuant) -> ContextBudget {
     let model_bytes = match quant {
         ModelQuant::Q5 => 1_300_000_000,
         ModelQuant::Q8 => 1_750_000_000,
     };
     let kv_per_token = 24_u64 * 2 * 2 * 64 * 2;
     let kv_per_token_with_overhead = kv_per_token * 5 / 4;
-    let _ = available_memory_bytes;
     let context_tokens = CONTEXT_TOKENS_AUTO;
     let estimated_kv_bytes = kv_per_token_with_overhead * u64::from(context_tokens);
     ContextBudget {
