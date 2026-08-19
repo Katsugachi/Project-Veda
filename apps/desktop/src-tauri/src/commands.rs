@@ -192,7 +192,7 @@ fn list_local_docsets(state: &AppState) -> Vec<Docset> {
             initials: "YO".into(),
         });
     }
-    locals.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    locals.sort_by_key(|left| left.name.to_lowercase());
     locals
 }
 
