@@ -1,7 +1,7 @@
 # Veda audit report
 
-Date: 2026-08-18  
-Branch: `arena/01a013a5-project-veda`  
+Date: 2026-08-19  
+Branch: `arena/01a01510-project-veda` (fix-forward from `main` @ `e6fd22e`)  
 Scope: full app (UI, desktop commands, runtime, search, docs, core).
 
 This is a review of how the pieces actually join, not a test-count claim.
@@ -56,6 +56,7 @@ reproducer that fails if the fix is reverted.
 | 11 | Markdown quote-in-URL | First `escapeHtml` of the whole block already turns `"` into `&quot;` before the `<a>` rewrite. A second `escapeHtml(url)` would turn real `&` into `&amp;amp;` | Left the first-pass escape; added a regression that `&` stays `&amp;` once | `only links safe schemes` |
 | 12 | Last streamed tokens vanished / runtime tests did not compile | `read_sse_completion` dropped the leftover buffer when the body had no trailing newline; the unit test called `append_sse_delta` which did not exist | Extracted `append_sse_delta` + `drain_sse_buffer(..., flush_tail)` | `sse_flushes_the_last_line_without_a_newline` **fails** if `flush_tail` is ignored; `sse_delta_appends_content_and_ignores_done` **fails to compile** if the helper is deleted |
 | 13 | Two local libraries with `readme.md` hid each other | `chunk_page` built `id = local:{path}:{n}`; `LocalRetriever` merges by that id | Id is `local:{library-slug}:{path}:{n}` | `local_libraries_do_not_share_chunk_ids` **fails** on the old format; `two_local_libraries_with_the_same_filename_both_retrieve` |
+| 14 | `cargo test --workspace` red on main; `veda-runtime` never compiled on CI | `on_token` is already `Option<&mut (dyn FnMut(&str) + Send)>`. `.as_deref_mut()` reborrows that local; the reborrow is stored in the future and held across `.await` → **E0597**. Same bug twice: `client.rs` (`read_sse_completion(..., on_token.as_deref_mut()).await`) and `orchestrator.rs` (`complete_with_sink(..., on_token.as_deref_mut())` then `.await`). Clippy never ran. | Pass `on_token` by value. Drop the now-needless `mut` on both params. | rustc 1.88.0 snippet with the same types: broken file is **E0597**; passing `on_token` compiles. Workspace compile is CI — crates.io TLS is blocked here. |
 
 ---
 
@@ -75,38 +76,42 @@ so they are not “forgotten bugs”.
 
 ---
 
-## Verification (executed this pass)
+## Verification (2026-08-19)
+
+Do not merge this branch until GitHub CI is fully green. That is the
+only place that compiles the desktop crate and runs Clippy 1.97.
+
+What CI has actually executed on this branch:
+
+| Run | Commit | fmt | `cargo test --workspace` | `cargo clippy -D warnings` |
+|-----|--------|-----|--------------------------|----------------------------|
+| [32189633433](https://github.com/Katsugachi/Project-Veda/actions/runs/32189633433) | `74b1dd3` | green | **green** | **red**, exit 101 |
+| [32224440611](https://github.com/Katsugachi/Project-Veda/actions/runs/32224440611) | `a09906d` | — | job did not start (3s, empty steps) | — |
+
+Item 14 (E0597) is fixed: CI compiled and tested the whole workspace on
+`74b1dd3`. The remaining red is Clippy on Rust 1.97. Annotations only
+show `Process completed with exit code 101` — Azure log blobs are not
+readable from this sandbox.
+
+What this sandbox actually ran:
 
 ```
-./node_modules/.bin/tsc --noEmit     clean
-./node_modules/.bin/vitest run       128 passed / 5 files
-                                       (file-input change, local remove,
-                                        setup filter, href escape, 16K auto)
-./node_modules/.bin/vite build       clean (index-xNIXLQzt.js 61.41 kB)
-cargo test -p veda-core              28 passed (16K auto, planner keeps Local)
-cargo test -p veda-search            15 passed (mixed vectors, two local
-                                       README.md hits, 8k BM25 in 0.26s)
-cargo test -p veda-docs              3 passed (local chunk ids stay unique)
-rustfmt --check                      clean on touched Rust
+rustc / clippy 1.88.0 (npm @rustbin; static.rust-lang.org TLS is blocked)
+cargo fmt --all -- --check                         clean
+cargo clippy -p veda-core --lib -- -D warnings     clean (path-vendored serde/thiserror)
+cargo clippy -p veda-search --all-targets -D warnings  clean
+
+cargo test --workspace           NOT RUN (crates.io TLS blocked)
+cargo clippy --workspace         NOT RUN (same)
+veda-runtime / veda-desktop      NOT compiled here
 ```
 
-Offline `cargo test` ran against a crates.io-blocked sandbox using the
-current sources copied into `/tmp/veda-offline` (serde/thiserror derives
-stripped only in that copy). The assertions that pin the bugs ran on the
-real algorithms.
+Calling the workspace “verified” would be a lie. The remaining 1.97
+Clippy site is still unknown until a full CI job prints it.
 
-Quality, not count:
-
-- The file-input test **fails** if the `change` listener is deleted.
-- The planner Local test **failed on the unfixed source**, then passed.
-- Mixed-vector tests **fail** if `VectorIndex::build` is reverted to “all same length”.
-- `index_stem` **fails** if local packs write `local.json.zst` again.
-- SSE last-line test **fails** if `flush_tail` is a no-op.
-- Local chunk-id test **fails** if `push_chunk` drops the library slug.
-
-Desktop `veda-desktop` is not compiled here (no crates.io). CI
-`cargo test --workspace` / `clippy -D warnings` is the compile gate for
-Tauri, dialog `FilePath`, and the `Option<EmbeddingClient>` match.
+The product items in the table (16K auto context, Rust planner, Docs
+tab, BM25, local index stems, chunk ids) landed in PR #8. Their logic
+is unchanged by this pass.
 
 ---
 
@@ -123,12 +128,10 @@ Tauri, dialog `FilePath`, and the `Option<EmbeddingClient>` match.
 
 ## Files touched in this audit pass
 
-Critical path:
+This fix-forward pass:
 
-- `crates/veda-core/src/{context,planner,types,preflight,lib}.rs`
-- `crates/veda-runtime/src/{client,orchestrator,sidecar}.rs`
-- `crates/veda-search/src/{vector,hybrid,lexical}.rs`
-- `crates/veda-docs/src/{ingest,chunk,lib}.rs`
-- `apps/desktop/src-tauri/src/{commands,resources,lib,session}.rs`
-- `ui/src/{main,bridge,types,markdown}.ts`
-- `ui/tests/{round10,no-regressions}.test.ts`
+- `crates/veda-runtime/src/client.rs`
+- `crates/veda-runtime/src/orchestrator.rs`
+- `crates/veda-search/src/vector.rs`
+- `.github/workflows/ci.yml`
+- `AUDIT_REPORT.md`

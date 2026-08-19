@@ -37,11 +37,12 @@ pub fn plan_from_question(message: &str, available: &[DocsetId]) -> SearchQueryP
     // A second, identifier-only query helps BM25 when the user buried the
     // symbol in a long sentence.
     if let Some(symbol) = symbols.first() {
-        if queries.first().is_none_or(|query| {
-            !query
+        let already_named = queries.first().is_some_and(|query| {
+            query
                 .to_ascii_lowercase()
                 .contains(&symbol.to_ascii_lowercase())
-        }) {
+        });
+        if !already_named {
             queries.push(symbol.clone());
         }
     }
@@ -62,7 +63,7 @@ pub fn extract_symbols(message: &str) -> Vec<String> {
     let flush = |symbols: &mut Vec<String>, current: &mut String| {
         if current.len() > 2
             && (current.contains('.') || current.contains("::") || current.contains('_'))
-            && !symbols.iter().any(|existing| existing == current)
+            && !symbols.contains(current)
         {
             symbols.push(std::mem::take(current));
         } else {

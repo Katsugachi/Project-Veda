@@ -91,7 +91,7 @@ impl LlamaClient {
         mode: ReasoningMode,
         max_tokens: u32,
         response_format: Option<Value>,
-        mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
+        on_token: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<String, LlamaClientError> {
         let thinking = mode == ReasoningMode::Think;
         let stream = on_token.is_some() && response_format.is_none();
@@ -129,7 +129,9 @@ impl LlamaClient {
                 .map(|choice| choice.message.content)
                 .ok_or(LlamaClientError::EmptyCompletion);
         }
-        read_sse_completion(response, on_token.as_deref_mut()).await
+        // Pass the Option<&mut dyn …> through. as_deref_mut() reborrows the
+        // local and that reborrow is held across .await (E0597).
+        read_sse_completion(response, on_token).await
     }
 
     pub async fn health(&self) -> Result<(), LlamaClientError> {
@@ -167,6 +169,16 @@ struct AssistantMessage {
 /// last-line flush and the unit tests share the exact parser — a missing
 /// function here is what made `veda-runtime` tests fail to compile, and
 /// inlining it hid the leftover-buffer path.
+///
+/// `on_token` is a plain `dyn FnMut` with no `+ Send` bound on purpose.
+/// [`drain_sse_buffer`] reborrows the caller's
+/// `&mut Option<&mut (dyn FnMut(&str) + Send)>` twice — once in the line loop
+/// and once for the tail flush — and `&mut T` is invariant in `T`. Taking the
+/// `Send` form here would pin both reborrows to a single lifetime and fail to
+/// compile with E0597/E0499; widening to the unbounded trait object at each
+/// call site lets the reborrows end independently. The sink is still `Send`
+/// where it matters: the bound stays on the public streaming entry points so
+/// the returned future can be spawned.
 fn append_sse_delta(
     line: &str,
     assembled: &mut String,
@@ -348,6 +360,44 @@ mod tests {
         drain_sse_buffer(&mut pending, &mut assembled, &mut sink, true);
         assert_eq!(assembled, "Hello");
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn streaming_sink_survives_two_drains_and_stays_send() {
+        // Regression guard for the borrow shape of the token sink.
+        //
+        // `drain_sse_buffer` reborrows the caller's
+        // `&mut Option<&mut (dyn FnMut(&str) + Send)>` twice: once per loop
+        // iteration and once for the tail flush. `&mut T` is invariant in `T`,
+        // so passing the `+ Send` trait object straight into `append_sse_delta`
+        // pins both reborrows to one lifetime and fails to compile with E0499.
+        // `append_sse_delta` therefore takes a plain `dyn FnMut(&str)`.
+        //
+        // The sink must also stay `Send`: the desktop app streams tokens from a
+        // spawned task, so the whole future has to be `Send`.
+        fn assert_send<T: Send>(_: T) {}
+
+        let mut seen: Vec<String> = Vec::new();
+        {
+            let mut sink = |piece: &str| seen.push(piece.to_string());
+            let mut on_token: Option<&mut (dyn FnMut(&str) + Send)> = Some(&mut sink);
+
+            // A whole event, then a tail with no trailing newline: this is what
+            // forces both the loop reborrow and the flush reborrow.
+            let mut pending = String::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}",
+            );
+            let mut assembled = String::new();
+            drain_sse_buffer(&mut pending, &mut assembled, &mut on_token, false);
+            drain_sse_buffer(&mut pending, &mut assembled, &mut on_token, true);
+            assert_eq!(assembled, "Hello");
+        }
+        assert_eq!(seen, vec!["Hel", "lo"]);
+
+        let mut quiet = |_: &str| {};
+        let on_token: Option<&mut (dyn FnMut(&str) + Send)> = Some(&mut quiet);
+        let client = LlamaClient::new("http://127.0.0.1:1", "test-key").expect("client builds");
+        assert_send(client.complete_with_sink(Vec::new(), ReasoningMode::Fast, 16, None, on_token));
     }
 
     #[test]
