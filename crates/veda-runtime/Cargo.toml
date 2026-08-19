@@ -18,6 +18,3 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-
-[lints]
-workspace = true

@@ -40,6 +40,3 @@ tauri-plugin-shell = "2.3"
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-
-[lints]
-workspace = true
