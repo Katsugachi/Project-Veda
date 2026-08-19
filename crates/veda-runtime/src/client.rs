@@ -172,7 +172,7 @@ struct AssistantMessage {
 fn append_sse_delta(
     line: &str,
     assembled: &mut String,
-    mut on_token: Option<&mut dyn FnMut(&str)>,
+    mut on_token: Option<&mut (dyn FnMut(&str) + Send)>,
 ) {
     let Some(payload) = line.strip_prefix("data:") else {
         return;
@@ -210,22 +210,14 @@ fn drain_sse_buffer(
     while let Some(split) = pending.find('\n') {
         let line = pending[..split].trim_end_matches('\r').to_string();
         pending.replace_range(..=split, "");
-        append_sse_delta(
-            &line,
-            assembled,
-            on_token
-                .as_deref_mut()
-                .map(|sink| sink as &mut dyn FnMut(&str)),
-        );
+        append_sse_delta(&line, assembled, on_token.as_deref_mut());
     }
     if flush_tail && !pending.trim().is_empty() {
         let line = std::mem::take(pending);
         append_sse_delta(
             line.trim_end_matches('\r'),
             assembled,
-            on_token
-                .as_deref_mut()
-                .map(|sink| sink as &mut dyn FnMut(&str)),
+            on_token.as_deref_mut(),
         );
     }
 }

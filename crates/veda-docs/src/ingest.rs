@@ -195,11 +195,9 @@ pub fn parse_html(path: &str, canonical_url: &str, source: &str) -> DocPage {
                     let text = text_of(element);
                     if !text.is_empty() {
                         ensure_section(&mut sections, &title);
-                        sections
-                            .last_mut()
-                            .expect("section exists")
-                            .text
-                            .push_str(&format!("{text}\n"));
+                        let section = sections.last_mut().expect("section exists");
+                        section.text.push_str(&text);
+                        section.text.push('\n');
                     }
                 }
                 "pre" => {

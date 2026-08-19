@@ -63,7 +63,7 @@ pub fn extract_symbols(message: &str) -> Vec<String> {
     let flush = |symbols: &mut Vec<String>, current: &mut String| {
         if current.len() > 2
             && (current.contains('.') || current.contains("::") || current.contains('_'))
-            && !symbols.iter().any(|existing| existing == current)
+            && !symbols.contains(current)
         {
             symbols.push(std::mem::take(current));
         } else {

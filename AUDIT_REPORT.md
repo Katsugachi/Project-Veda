@@ -1,6 +1,6 @@
 # Veda audit report
 
-Date: 2026-08-18  
+Date: 2026-08-19  
 Branch: `arena/01a01510-project-veda` (fix-forward from `main` @ `e6fd22e`)  
 Scope: full app (UI, desktop commands, runtime, search, docs, core).
 
@@ -76,46 +76,42 @@ so they are not “forgotten bugs”.
 
 ---
 
-## Verification (this pass — 2026-08-18, after PR #8 merged red)
+## Verification (2026-08-19)
 
-What CI actually said on `main` (`e6fd22e`, run
-[32131603062](https://github.com/Katsugachi/Project-Veda/actions/runs/32131603062)):
+Do not merge this branch until GitHub CI is fully green. That is the
+only place that compiles the desktop crate and runs Clippy 1.97.
 
-```
-npm ci / npm run build / cargo fmt --all -- --check   passed
-cargo test --workspace                                failed, exit 101
-cargo clippy --workspace --all-targets -- -D warnings skipped
-```
+What CI has actually executed on this branch:
 
-The compile error is two identical E0597s in `veda-runtime`. After that
-failure the workspace, including the desktop crate, is not compiled.
+| Run | Commit | fmt | `cargo test --workspace` | `cargo clippy -D warnings` |
+|-----|--------|-----|--------------------------|----------------------------|
+| [32189633433](https://github.com/Katsugachi/Project-Veda/actions/runs/32189633433) | `74b1dd3` | green | **green** | **red**, exit 101 |
+| [32224440611](https://github.com/Katsugachi/Project-Veda/actions/runs/32224440611) | `a09906d` | — | job did not start (3s, empty steps) | — |
+
+Item 14 (E0597) is fixed: CI compiled and tested the whole workspace on
+`74b1dd3`. The remaining red is Clippy on Rust 1.97. Annotations only
+show `Process completed with exit code 101` — Azure log blobs are not
+readable from this sandbox.
 
 What this sandbox actually ran:
 
 ```
-rustc 1.88.0 (installed from npm @rustbin, not rustup — static.rust-lang.org TLS is blocked)
+rustc / clippy 1.88.0 (npm @rustbin; static.rust-lang.org TLS is blocked)
+cargo fmt --all -- --check                         clean
+cargo clippy -p veda-core --lib -- -D warnings     clean (path-vendored serde/thiserror)
+cargo clippy -p veda-search --all-targets -D warnings  clean
 
-# same types as client.rs / orchestrator.rs
-rustc --edition 2021 broken.rs   → error[E0597]: `on_token` does not live long enough
-                                   (as_deref_mut() held across .await)
-rustc --edition 2021 fixed.rs    → exit 0 (pass on_token by value)
-rustfmt --check                  → clean on the two touched files
-
-cargo test --workspace           NOT RUN
-cargo clippy --workspace         NOT RUN
-crates.io / static.rust-lang.org curl: (35) OpenSSL SSL_connect
+cargo test --workspace           NOT RUN (crates.io TLS blocked)
+cargo clippy --workspace         NOT RUN (same)
+veda-runtime / veda-desktop      NOT compiled here
 ```
 
-`veda-runtime` and `veda-desktop` have **not** been compiled in this
-sandbox. Calling them verified would be a lie. The compile gate is CI
-on this branch. Do not merge until
-`cargo test --workspace` and
-`cargo clippy --workspace --all-targets -- -D warnings` are green.
+Calling the workspace “verified” would be a lie. The remaining 1.97
+Clippy site is still unknown until a full CI job prints it.
 
-The product items in the table above (16K auto context, Rust planner,
-Docs tab, BM25, local index stems, chunk ids) landed in PR #8. Their
-logic is unchanged by this pass. Item 14 is the only reason `main` does
-not build.
+The product items in the table (16K auto context, Rust planner, Docs
+tab, BM25, local index stems, chunk ids) landed in PR #8. Their logic
+is unchanged by this pass.
 
 ---
 
