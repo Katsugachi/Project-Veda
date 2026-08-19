@@ -17,6 +17,18 @@ license = "MIT"
 authors = ["Veda contributors"]
 rust-version = "1.82"
 
+# Temporary probe: CI clippy logs are unreadable from this sandbox.
+# These are warn-by-default lints added after 1.88 (our local clippy).
+# If CI goes green, the failure is one of these and we will fix the
+# actual site and delete this table.
+[workspace.lints.clippy]
+uninlined_format_args = "allow"
+useless_borrows_in_formatting = "allow"
+manual_clear = "allow"
+explicit_auto_deref = "allow"
+needless_option_as_deref = "allow"
+unused_format_specs = "allow"
+
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"

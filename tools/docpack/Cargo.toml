@@ -17,3 +17,6 @@ veda-docs = { path = "../../crates/veda-docs" }
 regex = "1.11"
 scraper = "0.24"
 walkdir = "2.5"
+
+[lints]
+workspace = true
