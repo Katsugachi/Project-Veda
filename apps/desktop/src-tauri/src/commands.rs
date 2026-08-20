@@ -451,7 +451,18 @@ pub async fn ask_veda(
         });
     }
 
-    let index = load_search_index(&state, &request.docsets).await?;
+    // EXECUTION_PLAN part 32: the session returns to AppState on every exit
+    // path (success, error, empty-index). Propagating with `?` here would drop
+    // the warm session and kill the loaded model over a transient index-load
+    // failure, so put it back before returning the error.
+    let index = match load_search_index(&state, &request.docsets).await {
+        Ok(index) => index,
+        Err(error) => {
+            session.touch();
+            *slot = Some(session);
+            return Err(error);
+        }
+    };
     if index.is_empty() {
         session.touch();
         *slot = Some(session);
